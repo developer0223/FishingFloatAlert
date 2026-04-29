@@ -48,6 +48,8 @@ namespace FishingFloatAlertSharp
 
         private DispatcherTimer? _openCvPreviewTimer;
 
+        private DispatcherTimer? _clockTimer;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -101,12 +103,39 @@ namespace FishingFloatAlertSharp
 
         private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
         {
+            StartClockTimer();
             await RefreshCameraListAsync();
         }
 
         private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
         {
+            StopClockTimer();
             StopPreviewSync();
+        }
+
+        private void StartClockTimer()
+        {
+            StopClockTimer();
+            _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _clockTimer.Tick += ClockTimer_OnTick;
+            _clockTimer.Start();
+            UpdateClockText();
+        }
+
+        private void StopClockTimer()
+        {
+            if (_clockTimer is null)
+                return;
+            _clockTimer.Stop();
+            _clockTimer.Tick -= ClockTimer_OnTick;
+            _clockTimer = null;
+        }
+
+        private void ClockTimer_OnTick(object? sender, EventArgs e) => UpdateClockText();
+
+        private void UpdateClockText()
+        {
+            ClockTextBlock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         }
 
         private async void RefreshCamerasButton_OnClick(object sender, RoutedEventArgs e)
@@ -487,6 +516,8 @@ namespace FishingFloatAlertSharp
                 if (!cap.IsOpened())
                     throw new InvalidOperationException("OpenCV로 비디오 입력을 열 수 없습니다. DirectShow index=" + camIndex);
 
+                TryRequestOpenCvCaptureResolution(cap);
+
                 _openCvCapture = cap;
                 _openCvPreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
                 _openCvPreviewTimer.Tick += OnOpenCvPreviewTick;
@@ -564,7 +595,7 @@ namespace FishingFloatAlertSharp
             var capture = await InitializeMediaCaptureAsync(deviceId);
             _mediaCapture = capture;
 
-            var frameSource = PickFrameSource(capture);
+            var frameSource = await PrepareFrameSourceWithBestFormatAsync(capture);
             if (frameSource == null)
             {
                 AppDiagnostics.LogError($"카메라 프레임 소스 없음(FrameSources 비어 있음). deviceId={deviceId}");
@@ -654,40 +685,95 @@ namespace FishingFloatAlertSharp
             }
         }
 
-        private static MediaFrameSource? PickFrameSource(MediaCapture capture)
+        /// <summary>
+        /// 모든 프레임 소스·지원 포맷 중 픽셀 수가 가장 큰 조합을 고르고 <see cref="MediaFrameSource.SetFormatAsync"/>로 적용합니다.
+        /// (기존: 첫 VideoPreview 핀만 선택 + 포맷 미설정 → 드라이버 기본 640×480 등으로 표시되는 경우가 많음)
+        /// </summary>
+        private static async Task<MediaFrameSource?> PrepareFrameSourceWithBestFormatAsync(MediaCapture capture)
         {
             if (capture.FrameSources.Count == 0)
                 return null;
 
-            foreach (var s in capture.FrameSources.Values)
-            {
-                if (s.Info.MediaStreamType == MediaStreamType.VideoPreview)
-                    return s;
-            }
+            MediaFrameSource? bestSource = null;
+            MediaFrameFormat? bestFormat = null;
+            long bestArea = -1;
+            var bestTypeRank = int.MinValue;
+            var bestFps = -1.0;
 
-            foreach (var s in capture.FrameSources.Values)
+            foreach (var source in capture.FrameSources.Values)
             {
-                if (s.Info.MediaStreamType == MediaStreamType.VideoRecord)
-                    return s;
-            }
-
-            MediaFrameSource? best = null;
-            var bestArea = 0;
-            foreach (var s in capture.FrameSources.Values)
-            {
-                var area = s.SupportedFormats
-                    .Where(f => f.VideoFormat != null)
-                    .Select(f => (int)(f.VideoFormat!.Width * f.VideoFormat.Height))
-                    .DefaultIfEmpty(0)
-                    .Max();
-                if (area > bestArea)
+                var typeRank = MediaStreamTypeRank(source.Info.MediaStreamType);
+                foreach (var format in source.SupportedFormats)
                 {
+                    var vf = format.VideoFormat;
+                    if (vf is null)
+                        continue;
+
+                    long area = (long)vf.Width * vf.Height;
+                    var fps = FrameRateToFps(format.FrameRate);
+
+                    var better = area > bestArea
+                        || (area == bestArea && typeRank > bestTypeRank)
+                        || (area == bestArea && typeRank == bestTypeRank && fps > bestFps);
+
+                    if (!better)
+                        continue;
+
                     bestArea = area;
-                    best = s;
+                    bestTypeRank = typeRank;
+                    bestFps = fps;
+                    bestSource = source;
+                    bestFormat = format;
                 }
             }
 
-            return best ?? capture.FrameSources.Values.FirstOrDefault();
+            if (bestSource is null)
+                return capture.FrameSources.Values.FirstOrDefault();
+
+            if (bestFormat is not null)
+            {
+                try
+                {
+                    await bestSource.SetFormatAsync(bestFormat).AsTask();
+                }
+                catch (Exception ex)
+                {
+                    AppDiagnostics.LogWarning("카메라 고해상도 포맷 적용 실패(드라이버 기본 해상도 유지)", ex);
+                }
+            }
+
+            return bestSource;
+        }
+
+        private static int MediaStreamTypeRank(MediaStreamType t) => t switch
+        {
+            MediaStreamType.VideoRecord => 10,
+            MediaStreamType.VideoPreview => 5,
+            _ => 0,
+        };
+
+        private static double FrameRateToFps(MediaRatio? r)
+        {
+            if (r is null || r.Denominator == 0)
+                return 0;
+            return r.Numerator / (double)r.Denominator;
+        }
+
+        /// <summary>DirectShow 기본값(종종 320×240~640×480)보다 높은 해상도를 순차 요청합니다.</summary>
+        private static void TryRequestOpenCvCaptureResolution(OpenCvSharp.VideoCapture cap)
+        {
+            (int w, int h)[] targets = [(1920, 1080), (1280, 720), (960, 540), (800, 600)];
+            using var probe = new OpenCvSharp.Mat();
+            foreach (var (tw, th) in targets)
+            {
+                cap.Set(OpenCvSharp.VideoCaptureProperties.FrameWidth, tw);
+                cap.Set(OpenCvSharp.VideoCaptureProperties.FrameHeight, th);
+                if (!cap.Read(probe) || probe.Empty())
+                    continue;
+
+                if (probe.Width * probe.Height >= 1280 * 720 * 0.9)
+                    return;
+            }
         }
 
         private void OnPreviewFrameArrived(MediaFrameReader sender, object args)

@@ -17,33 +17,47 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0"
-                    Orientation="Horizontal"
-                    HorizontalAlignment="Left"
-                    VerticalAlignment="Top"
-                    Margin="12,10,12,0">
-            <TextBlock Text="카메라: "
+        <Grid Grid.Row="0"
+              Margin="12,10,12,0"
+              VerticalAlignment="Top">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center">
+                <TextBlock Text="카메라: "
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"/>
+                <ComboBox x:Name="CameraCombo"
+                          MinWidth="320"
+                          Height="24"
+                          VerticalAlignment="Center"
+                          Margin="0,0,8,0"
+                          DisplayMemberPath="Name"
+                          SelectionChanged="CameraCombo_OnSelectionChanged"/>
+                <Button x:Name="RefreshCamerasButton"
+                        Width="24"
+                        Height="24"
+                        Padding="0"
+                        FontFamily="Segoe MDL2 Assets"
+                        Content="&#xE72C;"
+                        FontSize="11"
+                        Foreground="Black"
+                        ToolTip="카메라 목록 새로고침"
+                        VerticalAlignment="Center"
+                        Click="RefreshCamerasButton_OnClick"/>
+            </StackPanel>
+            <TextBlock x:Name="ClockTextBlock"
+                       Grid.Column="1"
                        VerticalAlignment="Center"
-                       Margin="0,0,8,0"/>
-            <ComboBox x:Name="CameraCombo"
-                      MinWidth="320"
-                      Height="24"
-                      VerticalAlignment="Center"
-                      Margin="0,0,8,0"
-                      DisplayMemberPath="Name"
-                      SelectionChanged="CameraCombo_OnSelectionChanged"/>
-            <Button x:Name="RefreshCamerasButton"
-                    Width="24"
-                    Height="24"
-                    Padding="0"
-                    FontFamily="Segoe MDL2 Assets"
-                    Content="&#xE72C;"
-                    FontSize="11"
-                    Foreground="Black"
-                    ToolTip="카메라 목록 새로고침"
-                    VerticalAlignment="Center"
-                    Click="RefreshCamerasButton_OnClick"/>
-        </StackPanel>
+                       Margin="16,0,0,0"
+                       FontFamily="Consolas"
+                       FontSize="14"
+                       Text=""/>
+        </Grid>
         <Border Grid.Row="1"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Top"
@@ -56,6 +70,7 @@
                 ClipToBounds="True">
             <Image x:Name="PreviewImage"
                    Stretch="Uniform"
+                   RenderOptions.BitmapScalingMode="Fant"
                    HorizontalAlignment="Stretch"
                    VerticalAlignment="Stretch"/>
         </Border>
