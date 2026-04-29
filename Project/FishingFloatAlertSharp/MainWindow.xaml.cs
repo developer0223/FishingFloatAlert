@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -39,6 +41,12 @@ namespace FishingFloatAlertSharp
         private int _previewBlitScheduled;
         private long _lastNullSoftwareBitmapLogTick;
         private long _lastFrameProcessErrorLogTick;
+        private bool _suppressCameraSelectionChanged;
+
+        /// <summary>DirectShow + OpenCV 미리보기(OBS Virtual Camera 등 WinRT 미노출 장치).</summary>
+        private OpenCvSharp.VideoCapture? _openCvCapture;
+
+        private DispatcherTimer? _openCvPreviewTimer;
 
         public MainWindow()
         {
@@ -109,15 +117,20 @@ namespace FishingFloatAlertSharp
         private async Task RefreshCameraListAsync()
         {
             await StopPreviewAsync();
+
+            string? keepDeviceId = null;
+            string? keepName = null;
+            if (CameraCombo.SelectedItem is CameraComboEntry cur && cur.SelectedId >= 0)
+            {
+                keepDeviceId = cur.DeviceInformationId;
+                keepName = cur.Name;
+            }
+
             RefreshCamerasButton.IsEnabled = false;
+            _suppressCameraSelectionChanged = true;
             try
             {
-                // MediaDevice 셀렉터: USB 웹캠·OBS Virtual Camera 등 WinRT에 노출되는 캡처 장치를 더 폭넓게 포함합니다.
-                var selector = MediaDevice.GetVideoCaptureSelector();
-                var devices = (await DeviceInformation.FindAllAsync(selector).AsTask())
-                    .GroupBy(d => d.Id)
-                    .Select(g => g.First())
-                    .ToList();
+                var rows = await EnumerateCameraRowsForComboAsync();
 
                 _cameraComboEntries.Clear();
                 _cameraComboEntries.Add(new CameraComboEntry(
@@ -125,17 +138,31 @@ namespace FishingFloatAlertSharp
                     name: "카메라를 선택해주세요",
                     deviceInformationId: null));
 
-                foreach (var d in devices.OrderBy(x => x.Name))
+                foreach (var (name, id) in rows)
                 {
                     var index = _cameraComboEntries.Count - 1;
                     _cameraComboEntries.Add(new CameraComboEntry(
                         selectedId: index,
-                        name: d.Name,
-                        deviceInformationId: d.Id));
+                        name: name,
+                        deviceInformationId: id));
                 }
 
-                CameraCombo.SelectedIndex = 0;
-                selectedCameraId = -1;
+                CameraComboEntry? restored = null;
+                if (!string.IsNullOrEmpty(keepDeviceId))
+                {
+                    restored = _cameraComboEntries.FirstOrDefault(e =>
+                        e.DeviceInformationId != null
+                        && string.Equals(e.DeviceInformationId, keepDeviceId, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(e.Name, keepName ?? "", StringComparison.OrdinalIgnoreCase))
+                        ?? _cameraComboEntries.FirstOrDefault(e =>
+                            e.DeviceInformationId != null
+                            && string.Equals(e.DeviceInformationId, keepDeviceId, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (restored != null)
+                    CameraCombo.SelectedItem = restored;
+                else
+                    CameraCombo.SelectedIndex = 0;
             }
             catch (Exception ex)
             {
@@ -143,12 +170,116 @@ namespace FishingFloatAlertSharp
             }
             finally
             {
+                _suppressCameraSelectionChanged = false;
                 RefreshCamerasButton.IsEnabled = true;
             }
+
+            if (CameraCombo.SelectedItem is CameraComboEntry entry)
+                selectedCameraId = entry.SelectedId;
+            else
+                selectedCameraId = -1;
+
+            await RestartPreviewForSelectionAsync();
+        }
+
+        /// <summary>
+        /// WinRT에 노출되는 비디오 캡처 장치를 여러 쿼리로 합쳐 엽니다. (가상 카메라가 한쪽 쿼리에만 나오는 경우 대비)
+        /// </summary>
+        private static async Task<List<DeviceInformation>> EnumerateVideoCaptureDevicesMergedAsync()
+        {
+            var mediaSelector = MediaDevice.GetVideoCaptureSelector();
+            var list0 = await DeviceInformation.FindAllAsync(mediaSelector).AsTask();
+            var list1 = await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture).AsTask();
+
+            IReadOnlyList<DeviceInformation> list2 = Array.Empty<DeviceInformation>();
+            try
+            {
+                // KSCATEGORY_VIDEO_CAMERA (USB/가상 카메라 일부가 여기에만 잡힘).
+                // 주의: {65E8773D-...} 는 KSCATEGORY_CAPTURE(오디오)라 마이크·라인이 섞이면 안 됨.
+                const string kscVideoCameraAqs =
+                    "System.Devices.InterfaceClassGuid:=\"{E5323777-E976-4F5B-9B55-B94699C46E44}\" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True";
+                list2 = await DeviceInformation.FindAllAsync(kscVideoCameraAqs).AsTask();
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning("KSCATEGORY_VIDEO_CAMERA 추가 열거 실패(무시)", ex);
+            }
+
+            var byId = list0
+                .Concat(list1)
+                .Concat(list2)
+                .GroupBy(d => d.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .Where(d => !IsLikelyAudioCaptureDeviceName(d.Name))
+                .ToList();
+
+            // 동일 표시 이름·다른 인터페이스 Id 중복(예: DESKTOP-… 여러 줄) 정리
+            return byId
+                .GroupBy(d => (d.Name ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).First())
+                .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        /// <summary>잘못된 열거가 섞였을 때를 대비한 보험(오디오 입력 표시명).</summary>
+        private static bool IsLikelyAudioCaptureDeviceName(string? name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return false;
+            var n = name.Trim();
+            if (n.Contains("Realtek HD Audio", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (n.Contains("Mic input", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (n.Contains("Line input", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (n.Contains("Stereo input", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(n, "USB Audio", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (n.Contains("USBC Headset", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return n.Contains("Headset", StringComparison.OrdinalIgnoreCase)
+                   && !n.Contains("Camera", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>WinRT 목록 + DirectShow 전용(이름이 WinRT와 겹치지 않는) 장치.</summary>
+        private static async Task<List<(string Name, string Id)>> EnumerateCameraRowsForComboAsync()
+        {
+            var winRt = await EnumerateVideoCaptureDevicesMergedAsync();
+            var winNameSet = new HashSet<string>(
+                winRt.Select(d => (d.Name ?? "").Trim()),
+                StringComparer.OrdinalIgnoreCase);
+
+            var rows = new List<(string Name, string Id)>();
+            foreach (var d in winRt.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                rows.Add((d.Name, d.Id));
+
+            try
+            {
+                // OpenCV DSHOW는 장치 경로 문자열이 아니라 열거 순서의 정수 인덱스로 여는 것이 안정적입니다.
+                foreach (var (index, name, path) in DirectShowVideoDevices.EnumerateVideoInputDevices())
+                {
+                    if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(path))
+                        continue;
+                    if (winNameSet.Contains(name.Trim()))
+                        continue;
+                    rows.Add((name.Trim(), "dshowidx:" + index.ToString(CultureInfo.InvariantCulture)));
+                }
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning("DirectShow 비디오 입력 열거 실패", ex);
+            }
+
+            return rows;
         }
 
         private async void CameraCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (_suppressCameraSelectionChanged)
+                return;
+
             if (CameraCombo.SelectedItem is CameraComboEntry entry)
                 selectedCameraId = entry.SelectedId;
             else
@@ -161,9 +292,16 @@ namespace FishingFloatAlertSharp
         {
             await StopPreviewAsync();
             if (selectedCameraId < 0)
+            {
+                await ClearPreviewSurfaceAsync();
                 return;
+            }
+
             if (CameraCombo.SelectedItem is not CameraComboEntry { DeviceInformationId: { } deviceId })
+            {
+                await ClearPreviewSurfaceAsync();
                 return;
+            }
 
             try
             {
@@ -179,6 +317,8 @@ namespace FishingFloatAlertSharp
 
         private async Task StopPreviewAsync()
         {
+            await StopOpenCvPreviewAsync();
+
             if (_frameReader != null)
             {
                 _frameReader.FrameArrived -= OnPreviewFrameArrived;
@@ -215,10 +355,18 @@ namespace FishingFloatAlertSharp
             _previewBitmap = null;
             _previewWidth = 0;
             _previewHeight = 0;
+            await ClearPreviewSurfaceAsync();
+        }
+
+        private Task ClearPreviewSurfaceAsync()
+        {
+            return Dispatcher.InvokeAsync(() => { PreviewImage.Source = null; }).Task;
         }
 
         private void StopPreviewSync()
         {
+            StopOpenCvPreviewSync();
+
             try
             {
                 if (_frameReader != null)
@@ -249,10 +397,170 @@ namespace FishingFloatAlertSharp
             _previewBitmap = null;
             _previewWidth = 0;
             _previewHeight = 0;
+            try
+            {
+                Dispatcher.Invoke(() => { PreviewImage.Source = null; }, DispatcherPriority.Send);
+            }
+            catch
+            {
+                // 창 종료 중 Dispatcher 무효일 수 있음
+            }
+        }
+
+        private Task StopOpenCvPreviewAsync()
+        {
+            return Dispatcher.InvokeAsync(() =>
+            {
+                if (_openCvPreviewTimer != null)
+                {
+                    _openCvPreviewTimer.Stop();
+                    _openCvPreviewTimer.Tick -= OnOpenCvPreviewTick;
+                    _openCvPreviewTimer = null;
+                }
+
+                _openCvCapture?.Dispose();
+                _openCvCapture = null;
+            }).Task;
+        }
+
+        private void StopOpenCvPreviewSync()
+        {
+            try
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (_openCvPreviewTimer != null)
+                    {
+                        _openCvPreviewTimer.Stop();
+                        _openCvPreviewTimer.Tick -= OnOpenCvPreviewTick;
+                        _openCvPreviewTimer = null;
+                    }
+
+                    _openCvCapture?.Dispose();
+                    _openCvCapture = null;
+                }, DispatcherPriority.Send);
+            }
+            catch
+            {
+                // 창 종료 중
+            }
+        }
+
+        private async Task StartOpenCvDirectShowPreviewAsync(string deviceIdMarker)
+        {
+            await StopOpenCvPreviewAsync();
+
+            int camIndex;
+            if (deviceIdMarker.StartsWith("dshowidx:", StringComparison.OrdinalIgnoreCase))
+            {
+                var s = deviceIdMarker["dshowidx:".Length..];
+                if (!int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out camIndex) || camIndex < 0)
+                    throw new InvalidOperationException("DirectShow 장치 인덱스가 올바르지 않습니다: " + deviceIdMarker);
+            }
+            else if (deviceIdMarker.StartsWith("dshowpath:", StringComparison.OrdinalIgnoreCase))
+            {
+                var path = Uri.UnescapeDataString(deviceIdMarker["dshowpath:".Length..]);
+                camIndex = DirectShowVideoDevices.FindIndexByDevicePath(path);
+                if (camIndex < 0)
+                    throw new InvalidOperationException("DirectShow 경로에 해당하는 인덱스를 찾을 수 없습니다: " + path);
+                AppDiagnostics.LogWarning("dshowpath: 형식은 dshowidx: 로 대체되었습니다. 목록 새로고침을 권장합니다.");
+            }
+            else
+            {
+                throw new InvalidOperationException("지원하지 않는 DirectShow 장치 Id: " + deviceIdMarker);
+            }
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                PreviewImage.Source = null;
+                _previewBitmap = null;
+                _previewWidth = 0;
+                _previewHeight = 0;
+
+                var cap = new OpenCvSharp.VideoCapture(camIndex, OpenCvSharp.VideoCaptureAPIs.DSHOW);
+                if (!cap.IsOpened())
+                {
+                    cap.Dispose();
+                    cap = new OpenCvSharp.VideoCapture(camIndex, OpenCvSharp.VideoCaptureAPIs.ANY);
+                }
+
+                if (!cap.IsOpened())
+                    throw new InvalidOperationException("OpenCV로 비디오 입력을 열 수 없습니다. DirectShow index=" + camIndex);
+
+                _openCvCapture = cap;
+                _openCvPreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
+                _openCvPreviewTimer.Tick += OnOpenCvPreviewTick;
+                _openCvPreviewTimer.Start();
+            });
+        }
+
+        private void OnOpenCvPreviewTick(object? sender, EventArgs e)
+        {
+            if (_openCvCapture is null || !_openCvCapture.IsOpened())
+                return;
+
+            var cap = _openCvCapture;
+
+            using var frame = new OpenCvSharp.Mat();
+            if (!cap.Read(frame) || frame.Empty())
+                return;
+
+            if (frame.Channels() == 1)
+                OpenCvSharp.Cv2.CvtColor(frame, frame, OpenCvSharp.ColorConversionCodes.GRAY2BGR);
+
+            using var bgra = new OpenCvSharp.Mat();
+            OpenCvSharp.Cv2.CvtColor(frame, bgra, OpenCvSharp.ColorConversionCodes.BGR2BGRA);
+
+            var w = bgra.Cols;
+            var h = bgra.Rows;
+            var stride = w * 4;
+            var len = stride * h;
+            var pixels = new byte[len];
+            if (bgra.IsContinuous())
+                Marshal.Copy(bgra.Data, pixels, 0, len);
+            else
+            {
+                for (var r = 0; r < h; r++)
+                    Marshal.Copy(bgra.Ptr(r), pixels, r * stride, stride);
+            }
+
+            if (_previewBitmap == null || w != _previewWidth || h != _previewHeight)
+            {
+                _previewBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
+                _previewWidth = w;
+                _previewHeight = h;
+                PreviewImage.Source = _previewBitmap;
+            }
+
+            _previewBitmap.Lock();
+            try
+            {
+                var dstStride = _previewBitmap.BackBufferStride;
+                if (dstStride == stride)
+                    Marshal.Copy(pixels, 0, _previewBitmap.BackBuffer, len);
+                else
+                {
+                    for (var row = 0; row < h; row++)
+                        Marshal.Copy(pixels, row * stride, _previewBitmap.BackBuffer + row * dstStride, Math.Min(stride, dstStride));
+                }
+
+                _previewBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
+            }
+            finally
+            {
+                _previewBitmap.Unlock();
+            }
         }
 
         private async Task StartPreviewAsync(string deviceId)
         {
+            if (deviceId.StartsWith("dshowidx:", StringComparison.OrdinalIgnoreCase)
+                || deviceId.StartsWith("dshowpath:", StringComparison.OrdinalIgnoreCase))
+            {
+                await StartOpenCvDirectShowPreviewAsync(deviceId);
+                return;
+            }
+
             var capture = await InitializeMediaCaptureAsync(deviceId);
             _mediaCapture = capture;
 
