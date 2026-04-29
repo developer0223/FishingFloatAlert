@@ -4,6 +4,13 @@
              xmlns:local="clr-namespace:FishingFloatAlertSharp"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-         
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FF1E1E1E"/>
+        <SolidColorBrush x:Key="AppForegroundBrush" Color="#FFE8E8E8"/>
+        <SolidColorBrush x:Key="AppSurfaceBrush" Color="#FF2D2D30"/>
+
+        <Style TargetType="Window">
+            <Setter Property="Background" Value="{StaticResource AppBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource AppForegroundBrush}"/>
+        </Style>
     </Application.Resources>
 </Application>
