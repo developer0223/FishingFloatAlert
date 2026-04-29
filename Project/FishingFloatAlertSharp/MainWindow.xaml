@@ -5,10 +5,38 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:FishingFloatAlertSharp"
         mc:Ignorable="d"
-        Title="찌 알리미" Height="450" Width="800"
+        Title="찌 알리미"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
         Background="{StaticResource AppBackgroundBrush}"
-        Foreground="{StaticResource AppForegroundBrush}">
+        Foreground="{StaticResource AppForegroundBrush}"
+        Loaded="MainWindow_OnLoaded">
     <Grid Background="{StaticResource AppBackgroundBrush}">
-
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top"
+                    Margin="12,10,12,0">
+            <TextBlock Text="카메라: "
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0"/>
+            <ComboBox x:Name="CameraCombo"
+                      MinWidth="320"
+                      Height="24"
+                      VerticalAlignment="Center"
+                      Margin="0,0,8,0"
+                      DisplayMemberPath="Name"
+                      SelectionChanged="CameraCombo_OnSelectionChanged"/>
+            <Button x:Name="RefreshCamerasButton"
+                    Width="24"
+                    Height="24"
+                    Padding="0"
+                    FontFamily="Segoe MDL2 Assets"
+                    Content="&#xE72C;"
+                    FontSize="11"
+                    Foreground="Black"
+                    ToolTip="카메라 목록 새로고침"
+                    VerticalAlignment="Center"
+                    Click="RefreshCamerasButton_OnClick"/>
+        </StackPanel>
     </Grid>
 </Window>
