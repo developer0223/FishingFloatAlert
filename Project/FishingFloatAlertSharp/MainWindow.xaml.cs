@@ -12,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Windows.Devices.Enumeration;
 using Windows.Graphics.Imaging;
@@ -50,10 +51,38 @@ namespace FishingFloatAlertSharp
 
         private DispatcherTimer? _clockTimer;
 
+        /// <summary>미리보기에 겹친 ROI(오버레이 좌표, DIP). 실제 프레임은 <see cref="TryGetPreviewContentRect"/> 안에 맞춰 둡니다.</summary>
+        private Rect _previewRoiRectDips;
+
+        private bool _previewRoiHasPlacement;
+        private bool _previewRoiDragging;
+        private PreviewRoiHitKind _previewRoiActiveHit;
+        private Point _previewRoiDragMouseStart;
+        private Rect _previewRoiDragRectStart;
+        private Rect _previewRoiDragContentBounds;
+
+        private const double PreviewRoiMinSizeDip = 32;
+        private const double PreviewRoiCornerHitDip = 14;
+        private const double PreviewRoiEdgeHitDip = 10;
+
+        private enum PreviewRoiHitKind
+        {
+            None,
+            Move,
+            ResizeNorth,
+            ResizeNorthEast,
+            ResizeEast,
+            ResizeSouthEast,
+            ResizeSouth,
+            ResizeSouthWest,
+            ResizeWest,
+            ResizeNorthWest,
+        }
+
         public MainWindow()
         {
             InitializeComponent();
-            CameraCombo.ItemsSource = _cameraComboEntries;
+            CameraDeviceComboBox.ItemsSource = _cameraComboEntries;
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -149,7 +178,7 @@ namespace FishingFloatAlertSharp
 
             string? keepDeviceId = null;
             string? keepName = null;
-            if (CameraCombo.SelectedItem is CameraComboEntry cur && cur.SelectedId >= 0)
+            if (CameraDeviceComboBox.SelectedItem is CameraComboEntry cur && cur.SelectedId >= 0)
             {
                 keepDeviceId = cur.DeviceInformationId;
                 keepName = cur.Name;
@@ -189,9 +218,9 @@ namespace FishingFloatAlertSharp
                 }
 
                 if (restored != null)
-                    CameraCombo.SelectedItem = restored;
+                    CameraDeviceComboBox.SelectedItem = restored;
                 else
-                    CameraCombo.SelectedIndex = 0;
+                    CameraDeviceComboBox.SelectedIndex = 0;
             }
             catch (Exception ex)
             {
@@ -203,7 +232,7 @@ namespace FishingFloatAlertSharp
                 RefreshCamerasButton.IsEnabled = true;
             }
 
-            if (CameraCombo.SelectedItem is CameraComboEntry entry)
+            if (CameraDeviceComboBox.SelectedItem is CameraComboEntry entry)
                 selectedCameraId = entry.SelectedId;
             else
                 selectedCameraId = -1;
@@ -304,12 +333,12 @@ namespace FishingFloatAlertSharp
             return rows;
         }
 
-        private async void CameraCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void CameraDeviceComboBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_suppressCameraSelectionChanged)
                 return;
 
-            if (CameraCombo.SelectedItem is CameraComboEntry entry)
+            if (CameraDeviceComboBox.SelectedItem is CameraComboEntry entry)
                 selectedCameraId = entry.SelectedId;
             else
                 selectedCameraId = -1;
@@ -326,7 +355,7 @@ namespace FishingFloatAlertSharp
                 return;
             }
 
-            if (CameraCombo.SelectedItem is not CameraComboEntry { DeviceInformationId: { } deviceId })
+            if (CameraDeviceComboBox.SelectedItem is not CameraComboEntry { DeviceInformationId: { } deviceId })
             {
                 await ClearPreviewSurfaceAsync();
                 return;
@@ -389,7 +418,11 @@ namespace FishingFloatAlertSharp
 
         private Task ClearPreviewSurfaceAsync()
         {
-            return Dispatcher.InvokeAsync(() => { PreviewImage.Source = null; }).Task;
+            return Dispatcher.InvokeAsync(() =>
+            {
+                PreviewImage.Source = null;
+                ResetPreviewRoiOverlay();
+            }).Task;
         }
 
         private void StopPreviewSync()
@@ -428,7 +461,11 @@ namespace FishingFloatAlertSharp
             _previewHeight = 0;
             try
             {
-                Dispatcher.Invoke(() => { PreviewImage.Source = null; }, DispatcherPriority.Send);
+                Dispatcher.Invoke(() =>
+                {
+                    PreviewImage.Source = null;
+                    ResetPreviewRoiOverlay();
+                }, DispatcherPriority.Send);
             }
             catch
             {
@@ -561,6 +598,7 @@ namespace FishingFloatAlertSharp
                 _previewWidth = w;
                 _previewHeight = h;
                 PreviewImage.Source = _previewBitmap;
+                RefreshPreviewRoiLayout();
             }
 
             _previewBitmap.Lock();
@@ -877,6 +915,7 @@ namespace FishingFloatAlertSharp
                         _previewWidth = w;
                         _previewHeight = h;
                         PreviewImage.Source = _previewBitmap;
+                        RefreshPreviewRoiLayout();
                     }
 
                     _previewBitmap.Lock();
@@ -916,6 +955,310 @@ namespace FishingFloatAlertSharp
                     Interlocked.Exchange(ref _previewBlitScheduled, 0);
                 }
             });
+        }
+
+        private void RoiOverlayCanvas_OnSizeChanged(object sender, SizeChangedEventArgs e) => RefreshPreviewRoiLayout();
+
+        private void RoiOverlayCanvas_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (RoiOverlayCanvas is null || !TryGetPreviewContentRect(out var content))
+                return;
+
+            if (!_previewRoiHasPlacement)
+            {
+                _previewRoiRectDips = CreateDefaultPreviewRoi(content);
+                _previewRoiHasPlacement = true;
+                UpdatePreviewRoiVisual();
+            }
+
+            var p = e.GetPosition(RoiOverlayCanvas);
+            var hit = HitTestPreviewRoi(p, _previewRoiRectDips);
+            if (hit == PreviewRoiHitKind.None)
+                return;
+
+            _previewRoiDragging = true;
+            _previewRoiActiveHit = hit;
+            _previewRoiDragMouseStart = p;
+            _previewRoiDragRectStart = _previewRoiRectDips;
+            _previewRoiDragContentBounds = content;
+            RoiOverlayCanvas.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void RoiOverlayCanvas_OnMouseMove(object sender, MouseEventArgs e)
+        {
+            if (RoiOverlayCanvas is null)
+                return;
+
+            if (!_previewRoiDragging)
+            {
+                if (_previewRoiHasPlacement && TryGetPreviewContentRect(out _))
+                {
+                    var p = e.GetPosition(RoiOverlayCanvas);
+                    RoiOverlayCanvas.Cursor = CursorForPreviewRoiHit(HitTestPreviewRoi(p, _previewRoiRectDips));
+                }
+                else
+                {
+                    RoiOverlayCanvas.Cursor = Cursors.Arrow;
+                }
+
+                return;
+            }
+
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                FinishPreviewRoiMouseDrag();
+                return;
+            }
+
+            var cur = e.GetPosition(RoiOverlayCanvas);
+            _previewRoiRectDips = ComputePreviewRoiDuringDrag(cur);
+            UpdatePreviewRoiVisual();
+            e.Handled = true;
+        }
+
+        private void RoiOverlayCanvas_OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_previewRoiDragging)
+                return;
+            FinishPreviewRoiMouseDrag();
+            e.Handled = true;
+        }
+
+        private void RoiOverlayCanvas_OnLostMouseCapture(object sender, MouseEventArgs e) => FinishPreviewRoiMouseDrag();
+
+        private void FinishPreviewRoiMouseDrag()
+        {
+            if (!_previewRoiDragging)
+                return;
+            _previewRoiDragging = false;
+            _previewRoiActiveHit = PreviewRoiHitKind.None;
+            RoiOverlayCanvas?.ReleaseMouseCapture();
+            if (TryGetPreviewContentRect(out var content))
+                _previewRoiRectDips = ClampPreviewRoiToContent(_previewRoiRectDips, content);
+            UpdatePreviewRoiVisual();
+        }
+
+        private void ResetPreviewRoiOverlay()
+        {
+            _previewRoiHasPlacement = false;
+            _previewRoiDragging = false;
+            _previewRoiActiveHit = PreviewRoiHitKind.None;
+            _previewRoiRectDips = Rect.Empty;
+            RoiOverlayCanvas?.ReleaseMouseCapture();
+            UpdatePreviewRoiVisual();
+        }
+
+        private void RefreshPreviewRoiLayout()
+        {
+            if (RoiOverlayCanvas is null || !TryGetPreviewContentRect(out var content))
+                return;
+
+            if (!_previewRoiHasPlacement)
+            {
+                if (_previewWidth > 0 && _previewHeight > 0)
+                {
+                    _previewRoiRectDips = CreateDefaultPreviewRoi(content);
+                    _previewRoiHasPlacement = true;
+                }
+            }
+            else
+            {
+                _previewRoiRectDips = ClampPreviewRoiToContent(_previewRoiRectDips, content);
+            }
+
+            UpdatePreviewRoiVisual();
+        }
+
+        private bool TryGetPreviewContentRect(out Rect contentRect)
+        {
+            contentRect = default;
+            if (RoiOverlayCanvas is null)
+                return false;
+
+            var aw = RoiOverlayCanvas.ActualWidth;
+            var ah = RoiOverlayCanvas.ActualHeight;
+            if (aw < 1 || ah < 1)
+                return false;
+
+            if (_previewWidth <= 0 || _previewHeight <= 0)
+            {
+                contentRect = new Rect(0, 0, aw, ah);
+                return true;
+            }
+
+            var s = Math.Min(aw / _previewWidth, ah / _previewHeight);
+            var dw = _previewWidth * s;
+            var dh = _previewHeight * s;
+            var ox = (aw - dw) * 0.5;
+            var oy = (ah - dh) * 0.5;
+            contentRect = new Rect(ox, oy, dw, dh);
+            return true;
+        }
+
+        private static Rect CreateDefaultPreviewRoi(Rect content)
+        {
+            var cw = Math.Max(PreviewRoiMinSizeDip, content.Width * 0.35);
+            var ch = Math.Max(PreviewRoiMinSizeDip, content.Height * 0.35);
+            cw = Math.Min(cw, content.Width);
+            ch = Math.Min(ch, content.Height);
+            var lx = content.Left + (content.Width - cw) * 0.5;
+            var ly = content.Top + (content.Height - ch) * 0.5;
+            return new Rect(lx, ly, cw, ch);
+        }
+
+        private static Rect ClampPreviewRoiToContent(Rect r, Rect content)
+        {
+            var rw = Math.Min(Math.Max(r.Width, PreviewRoiMinSizeDip), content.Width);
+            var rh = Math.Min(Math.Max(r.Height, PreviewRoiMinSizeDip), content.Height);
+            var rx = Math.Max(content.Left, Math.Min(r.Left, content.Right - rw));
+            var ry = Math.Max(content.Top, Math.Min(r.Top, content.Bottom - rh));
+            return new Rect(rx, ry, rw, rh);
+        }
+
+        private PreviewRoiHitKind HitTestPreviewRoi(Point p, Rect r)
+        {
+            if (r.Width < 1 || r.Height < 1)
+                return PreviewRoiHitKind.None;
+
+            var cl = PreviewRoiCornerHitDip;
+            var nearLeft = p.X <= r.Left + cl;
+            var nearRight = p.X >= r.Right - cl;
+            var nearTop = p.Y <= r.Top + cl;
+            var nearBottom = p.Y >= r.Bottom - cl;
+
+            if (nearTop && nearLeft)
+                return PreviewRoiHitKind.ResizeNorthWest;
+            if (nearTop && nearRight)
+                return PreviewRoiHitKind.ResizeNorthEast;
+            if (nearBottom && nearLeft)
+                return PreviewRoiHitKind.ResizeSouthWest;
+            if (nearBottom && nearRight)
+                return PreviewRoiHitKind.ResizeSouthEast;
+
+            var inH = p.X >= r.Left && p.X <= r.Right;
+            var inV = p.Y >= r.Top && p.Y <= r.Bottom;
+
+            if (nearTop && inH)
+                return PreviewRoiHitKind.ResizeNorth;
+            if (nearBottom && inH)
+                return PreviewRoiHitKind.ResizeSouth;
+            if (nearLeft && inV)
+                return PreviewRoiHitKind.ResizeWest;
+            if (nearRight && inV)
+                return PreviewRoiHitKind.ResizeEast;
+
+            if (inH && inV)
+                return PreviewRoiHitKind.Move;
+
+            return PreviewRoiHitKind.None;
+        }
+
+        private static Cursor CursorForPreviewRoiHit(PreviewRoiHitKind hit) => hit switch
+        {
+            PreviewRoiHitKind.Move => Cursors.SizeAll,
+            PreviewRoiHitKind.ResizeNorth or PreviewRoiHitKind.ResizeSouth => Cursors.SizeNS,
+            PreviewRoiHitKind.ResizeEast or PreviewRoiHitKind.ResizeWest => Cursors.SizeWE,
+            PreviewRoiHitKind.ResizeNorthWest or PreviewRoiHitKind.ResizeSouthEast => Cursors.SizeNWSE,
+            PreviewRoiHitKind.ResizeNorthEast or PreviewRoiHitKind.ResizeSouthWest => Cursors.SizeNESW,
+            _ => Cursors.Arrow,
+        };
+
+        private Rect ComputePreviewRoiDuringDrag(Point currentMouse)
+        {
+            var dm = currentMouse - _previewRoiDragMouseStart;
+            var r0 = _previewRoiDragRectStart;
+            var b = _previewRoiDragContentBounds;
+            const double minS = PreviewRoiMinSizeDip;
+
+            double L = r0.Left;
+            double T = r0.Top;
+            double R = r0.Right;
+            double B = r0.Bottom;
+
+            switch (_previewRoiActiveHit)
+            {
+                case PreviewRoiHitKind.Move:
+                    L += dm.X;
+                    T += dm.Y;
+                    R += dm.X;
+                    B += dm.Y;
+                    break;
+
+                case PreviewRoiHitKind.ResizeNorthWest:
+                    L += dm.X;
+                    T += dm.Y;
+                    break;
+                case PreviewRoiHitKind.ResizeNorthEast:
+                    R += dm.X;
+                    T += dm.Y;
+                    break;
+                case PreviewRoiHitKind.ResizeSouthWest:
+                    L += dm.X;
+                    B += dm.Y;
+                    break;
+                case PreviewRoiHitKind.ResizeSouthEast:
+                    R += dm.X;
+                    B += dm.Y;
+                    break;
+
+                case PreviewRoiHitKind.ResizeNorth:
+                    T += dm.Y;
+                    break;
+                case PreviewRoiHitKind.ResizeSouth:
+                    B += dm.Y;
+                    break;
+                case PreviewRoiHitKind.ResizeWest:
+                    L += dm.X;
+                    break;
+                case PreviewRoiHitKind.ResizeEast:
+                    R += dm.X;
+                    break;
+
+                default:
+                    return _previewRoiRectDips;
+            }
+
+            if (_previewRoiActiveHit == PreviewRoiHitKind.Move)
+            {
+                var w = R - L;
+                var h = B - T;
+                L = Math.Max(b.Left, Math.Min(L, b.Right - w));
+                T = Math.Max(b.Top, Math.Min(T, b.Bottom - h));
+                return new Rect(L, T, w, h);
+            }
+
+            L = Math.Min(L, R - minS);
+            T = Math.Min(T, B - minS);
+            L = Math.Max(L, b.Left);
+            T = Math.Max(T, b.Top);
+            R = Math.Max(R, L + minS);
+            B = Math.Max(B, T + minS);
+            R = Math.Min(R, b.Right);
+            B = Math.Min(B, b.Bottom);
+
+            if (R <= L + minS - 0.0001 || B <= T + minS - 0.0001)
+                return ClampPreviewRoiToContent(_previewRoiDragRectStart, b);
+
+            return new Rect(L, T, R - L, B - T);
+        }
+
+        private void UpdatePreviewRoiVisual()
+        {
+            if (PreviewRoiRectangle is null || RoiOverlayCanvas is null)
+                return;
+
+            if (!_previewRoiHasPlacement || _previewRoiRectDips.Width < 1 || _previewRoiRectDips.Height < 1)
+            {
+                PreviewRoiRectangle.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            PreviewRoiRectangle.Visibility = Visibility.Visible;
+            PreviewRoiRectangle.Width = _previewRoiRectDips.Width;
+            PreviewRoiRectangle.Height = _previewRoiRectDips.Height;
+            Canvas.SetLeft(PreviewRoiRectangle, _previewRoiRectDips.Left);
+            Canvas.SetTop(PreviewRoiRectangle, _previewRoiRectDips.Top);
         }
 
         private sealed class CameraComboEntry

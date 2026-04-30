@@ -31,13 +31,13 @@
                 <TextBlock Text="카메라: "
                            VerticalAlignment="Center"
                            Margin="0,0,8,0"/>
-                <ComboBox x:Name="CameraCombo"
+                <ComboBox x:Name="CameraDeviceComboBox"
                           MinWidth="320"
                           Height="24"
                           VerticalAlignment="Center"
                           Margin="0,0,8,0"
                           DisplayMemberPath="Name"
-                          SelectionChanged="CameraCombo_OnSelectionChanged"/>
+                          SelectionChanged="CameraDeviceComboBox_OnSelectionChanged"/>
                 <Button x:Name="RefreshCamerasButton"
                         Width="24"
                         Height="24"
@@ -68,11 +68,28 @@
                 BorderBrush="#FF404040"
                 BorderThickness="1"
                 ClipToBounds="True">
-            <Image x:Name="PreviewImage"
-                   Stretch="Uniform"
-                   RenderOptions.BitmapScalingMode="Fant"
-                   HorizontalAlignment="Stretch"
-                   VerticalAlignment="Stretch"/>
+            <Grid>
+                <Image x:Name="PreviewImage"
+                       Stretch="Uniform"
+                       RenderOptions.BitmapScalingMode="Fant"
+                       HorizontalAlignment="Stretch"
+                       VerticalAlignment="Stretch"/>
+                <Canvas x:Name="RoiOverlayCanvas"
+                        Background="Transparent"
+                        HorizontalAlignment="Stretch"
+                        VerticalAlignment="Stretch"
+                        SizeChanged="RoiOverlayCanvas_OnSizeChanged"
+                        MouseLeftButtonDown="RoiOverlayCanvas_OnMouseLeftButtonDown"
+                        MouseMove="RoiOverlayCanvas_OnMouseMove"
+                        MouseLeftButtonUp="RoiOverlayCanvas_OnMouseLeftButtonUp"
+                        LostMouseCapture="RoiOverlayCanvas_OnLostMouseCapture">
+                    <Rectangle x:Name="PreviewRoiRectangle"
+                               Stroke="#FFFFCC44"
+                               StrokeThickness="2"
+                               Fill="#26FFCC44"
+                               IsHitTestVisible="False"/>
+                </Canvas>
+            </Grid>
         </Border>
     </Grid>
 </Window>
