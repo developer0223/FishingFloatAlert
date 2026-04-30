@@ -61,9 +61,28 @@ namespace FishingFloatAlertSharp
         private Rect _previewRoiDragRectStart;
         private Rect _previewRoiDragContentBounds;
 
+        /// <summary>원본 프레임(<see cref="_previewWidth"/>×<see cref="_previewHeight"/>)에서 ROI의 왼쪽·위·너비·높이 비율(0~1).</summary>
+        private double _previewRoiSourceNormX;
+
+        private double _previewRoiSourceNormY;
+        private double _previewRoiSourceNormWidth;
+        private double _previewRoiSourceNormHeight;
+
+        /// <summary><see cref="_previewRoiSourceNormX"/> 등을 현재 원본 해상도로 환산한 정수 사각형(픽셀).</summary>
+        private Int32Rect _previewRoiSourcePixels;
+
         private const double PreviewRoiMinSizeDip = 32;
         private const double PreviewRoiCornerHitDip = 14;
         private const double PreviewRoiEdgeHitDip = 10;
+
+        /// <summary>0.1초 구간에서 타겟 색이 ROI 안에서 이 거리(픽셀) 이상 움직이면 알람 조건으로 사용합니다.</summary>
+        private int _motionAlarmMinPixelDistance = 20;
+
+        private Color _targetColor = Color.FromRgb(0, 255, 0);
+
+        private bool _eyedropperActive;
+
+        private bool _suppressTargetColorPickerEvents;
 
         private enum PreviewRoiHitKind
         {
@@ -83,6 +102,8 @@ namespace FishingFloatAlertSharp
         {
             InitializeComponent();
             CameraDeviceComboBox.ItemsSource = _cameraComboEntries;
+            ApplyTargetColorToPicker();
+            SyncMotionThresholdFromUpDown();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -961,7 +982,38 @@ namespace FishingFloatAlertSharp
 
         private void RoiOverlayCanvas_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            if (RoiOverlayCanvas is null || !TryGetPreviewContentRect(out var content))
+            if (RoiOverlayCanvas is null)
+                return;
+
+            if (_eyedropperActive)
+            {
+                var eyedropPoint = e.GetPosition(RoiOverlayCanvas);
+                if (TrySamplePreviewPixelColor(eyedropPoint, out var picked))
+                {
+                    var c = picked;
+                    Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+                    {
+                        _suppressTargetColorPickerEvents = true;
+                        try
+                        {
+                            _targetColor = c;
+                            if (TargetColorPickerControl is not null)
+                                TargetColorPickerControl.SelectedColor = c;
+                        }
+                        finally
+                        {
+                            _suppressTargetColorPickerEvents = false;
+                        }
+
+                        EyedropperToggleButton.IsChecked = false;
+                    });
+                }
+
+                e.Handled = true;
+                return;
+            }
+
+            if (!TryGetPreviewContentRect(out var content))
                 return;
 
             if (!_previewRoiHasPlacement)
@@ -989,6 +1041,12 @@ namespace FishingFloatAlertSharp
         {
             if (RoiOverlayCanvas is null)
                 return;
+
+            if (_eyedropperActive)
+            {
+                RoiOverlayCanvas.Cursor = Cursors.Cross;
+                return;
+            }
 
             if (!_previewRoiDragging)
             {
@@ -1251,6 +1309,7 @@ namespace FishingFloatAlertSharp
             if (!_previewRoiHasPlacement || _previewRoiRectDips.Width < 1 || _previewRoiRectDips.Height < 1)
             {
                 PreviewRoiRectangle.Visibility = Visibility.Collapsed;
+                ClearPreviewRoiSourceMapping();
                 return;
             }
 
@@ -1259,6 +1318,120 @@ namespace FishingFloatAlertSharp
             PreviewRoiRectangle.Height = _previewRoiRectDips.Height;
             Canvas.SetLeft(PreviewRoiRectangle, _previewRoiRectDips.Left);
             Canvas.SetTop(PreviewRoiRectangle, _previewRoiRectDips.Top);
+            SyncPreviewRoiOverlayToSourceFrame();
+        }
+
+        private void ClearPreviewRoiSourceMapping()
+        {
+            _previewRoiSourceNormX = 0;
+            _previewRoiSourceNormY = 0;
+            _previewRoiSourceNormWidth = 0;
+            _previewRoiSourceNormHeight = 0;
+            _previewRoiSourcePixels = default;
+        }
+
+        /// <summary>
+        /// 1280×720 뷰 안의 Uniform 영상 표시 영역 대비 ROI(DIP)를 원본 프레임 비율·픽셀로 갱신합니다.
+        /// </summary>
+        private void SyncPreviewRoiOverlayToSourceFrame()
+        {
+            if (!_previewRoiHasPlacement
+                || _previewRoiRectDips.Width < 1
+                || _previewRoiRectDips.Height < 1
+                || _previewWidth <= 0
+                || _previewHeight <= 0
+                || !TryGetPreviewContentRect(out var content)
+                || content.Width < 1
+                || content.Height < 1)
+            {
+                ClearPreviewRoiSourceMapping();
+                return;
+            }
+
+            var r = ClampPreviewRoiToContent(_previewRoiRectDips, content);
+            _previewRoiSourceNormX = (r.Left - content.Left) / content.Width;
+            _previewRoiSourceNormY = (r.Top - content.Top) / content.Height;
+            _previewRoiSourceNormWidth = r.Width / content.Width;
+            _previewRoiSourceNormHeight = r.Height / content.Height;
+
+            var x = (int)Math.Round(_previewRoiSourceNormX * _previewWidth);
+            var y = (int)Math.Round(_previewRoiSourceNormY * _previewHeight);
+            var w = (int)Math.Round(_previewRoiSourceNormWidth * _previewWidth);
+            var h = (int)Math.Round(_previewRoiSourceNormHeight * _previewHeight);
+
+            x = Math.Clamp(x, 0, Math.Max(0, _previewWidth - 1));
+            y = Math.Clamp(y, 0, Math.Max(0, _previewHeight - 1));
+            w = Math.Clamp(w, 1, _previewWidth - x);
+            h = Math.Clamp(h, 1, _previewHeight - y);
+            _previewRoiSourcePixels = new Int32Rect(x, y, w, h);
+        }
+
+        private void TargetColorPickerControl_OnSelectedColorChanged(object sender, RoutedPropertyChangedEventArgs<Color?> e)
+        {
+            if (_suppressTargetColorPickerEvents)
+                return;
+            if (e.NewValue.HasValue)
+                _targetColor = e.NewValue.Value;
+        }
+
+        private void EyedropperToggleButton_OnChecked(object sender, RoutedEventArgs e) => _eyedropperActive = true;
+
+        private void EyedropperToggleButton_OnUnchecked(object sender, RoutedEventArgs e) => _eyedropperActive = false;
+
+        private void MotionPixelThresholdUpDown_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<object?> e)
+        {
+            SyncMotionThresholdFromUpDown();
+        }
+
+        private void SyncMotionThresholdFromUpDown()
+        {
+            if (MotionPixelThresholdUpDown?.Value is int v)
+                _motionAlarmMinPixelDistance = Math.Clamp(v, 1, 5000);
+        }
+
+        private void ApplyTargetColorToPicker()
+        {
+            if (TargetColorPickerControl is null)
+                return;
+            _suppressTargetColorPickerEvents = true;
+            try
+            {
+                TargetColorPickerControl.SelectedColor = _targetColor;
+            }
+            finally
+            {
+                _suppressTargetColorPickerEvents = false;
+            }
+        }
+
+        private bool TrySamplePreviewPixelColor(Point canvasPoint, out Color color)
+        {
+            color = default;
+            if (_previewBitmap is null || _previewWidth <= 0 || _previewHeight <= 0)
+                return false;
+            if (!TryGetPreviewContentRect(out var content) || content.Width < 1 || content.Height < 1)
+                return false;
+            if (!content.Contains(canvasPoint))
+                return false;
+
+            var nx = (canvasPoint.X - content.Left) / content.Width;
+            var ny = (canvasPoint.Y - content.Top) / content.Height;
+            var bx = (int)Math.Clamp(Math.Floor(nx * _previewWidth), 0, _previewWidth - 1);
+            var by = (int)Math.Clamp(Math.Floor(ny * _previewHeight), 0, _previewHeight - 1);
+
+            var bytes = new byte[4];
+            try
+            {
+                // WriteableBitmap에 Lock 후 CopyPixels를 호출하면 렌더/합성 스레드와 교착될 수 있어 Lock 없이 읽습니다.
+                _previewBitmap.CopyPixels(new Int32Rect(bx, by, 1, 1), bytes, 4, 0);
+            }
+            catch
+            {
+                return false;
+            }
+
+            color = Color.FromArgb(bytes[3], bytes[2], bytes[1], bytes[0]);
+            return true;
         }
 
         private sealed class CameraComboEntry

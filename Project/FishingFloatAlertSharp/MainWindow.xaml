@@ -4,6 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:FishingFloatAlertSharp"
+        xmlns:xctk="http://schemas.xceed.com/wpf/xaml/toolkit"
         mc:Ignorable="d"
         Title="찌 알리미"
         ResizeMode="NoResize"
@@ -16,6 +17,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <Grid Grid.Row="0"
               Margin="12,10,12,0"
@@ -90,6 +92,54 @@
                                IsHitTestVisible="False"/>
                 </Canvas>
             </Grid>
+        </Border>
+        <Border Grid.Row="2"
+                Margin="12,0,12,12"
+                Padding="14,12"
+                HorizontalAlignment="Stretch"
+                Background="{StaticResource AppSurfaceBrush}"
+                BorderBrush="#FF404040"
+                BorderThickness="1">
+            <StackPanel Orientation="Vertical">
+                <TextBlock Text="타겟 컬러"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,8"/>
+                <StackPanel Orientation="Horizontal">
+                    <xctk:ColorPicker x:Name="TargetColorPickerControl"
+                                      Width="260"
+                                      Height="28"
+                                      ShowRecentColors="False"
+                                      ShowStandardColors="True"
+                                      SelectedColorChanged="TargetColorPickerControl_OnSelectedColorChanged"/>
+                    <ToggleButton x:Name="EyedropperToggleButton"
+                                  Margin="10,0,0,0"
+                                  Width="32"
+                                  Height="28"
+                                  Padding="0"
+                                  FontFamily="Segoe MDL2 Assets"
+                                  Content="&#xEF3C;"
+                                  Foreground="{StaticResource AppForegroundBrush}"
+                                  ToolTip="스포이드: 켠 뒤 미리보기 영상을 클릭하면 해당 픽셀 색으로 설정됩니다."
+                                  Checked="EyedropperToggleButton_OnChecked"
+                                  Unchecked="EyedropperToggleButton_OnUnchecked"/>
+                </StackPanel>
+                <TextBlock Text="이동 범위"
+                           FontWeight="SemiBold"
+                           Margin="0,16,0,8"/>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="0.1초 동안 감지할 최소 이동 거리 (픽셀, ROI·원본 기준):"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap"
+                               MaxWidth="520"
+                               Margin="0,0,12,0"/>
+                    <xctk:IntegerUpDown x:Name="MotionPixelThresholdUpDown"
+                                        Width="100"
+                                        Minimum="1"
+                                        Maximum="5000"
+                                        Value="20"
+                                        ValueChanged="MotionPixelThresholdUpDown_OnValueChanged"/>
+                </StackPanel>
+            </StackPanel>
         </Border>
     </Grid>
 </Window>
