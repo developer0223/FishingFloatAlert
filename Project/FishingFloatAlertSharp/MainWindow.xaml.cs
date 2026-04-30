@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -37,6 +38,10 @@ namespace FishingFloatAlertSharp
         private MediaCapture? _mediaCapture;
         private MediaFrameReader? _frameReader;
         private WriteableBitmap? _previewBitmap;
+
+        /// <summary>타겟 색 ± 허용 범위에 맞는 픽셀만 흰색으로 표시한 미리보기용 비트맵.</summary>
+        private WriteableBitmap? _maskPreviewBitmap;
+
         private int _previewWidth;
         private int _previewHeight;
         private int _previewBlitScheduled;
@@ -84,12 +89,20 @@ namespace FishingFloatAlertSharp
         /// <summary>타겟 RGB 각 채널에서 허용할 최대 차이(0=일치만).</summary>
         private int _colorChannelTolerance = 12;
 
-        /// <summary>직전 프레임 ROI 내 유사색 픽셀 수. <c>-1</c>이면 아직 비교하지 않음.</summary>
-        private long _lastRoiSimilarMatchCount = -1;
+        /// <summary>ROI 유사색이 이 개수 이하일 때만 지속 비프합니다.</summary>
+        private const int FloatAlarmSustainMatchMax = 5;
 
-        private long _floatAlarmLastBeepTickMs;
+        private volatile bool _floatAlarmSustainRequested;
 
-        private const long FloatAlarmBeepCooldownMs = 350;
+        private volatile bool _floatAlarmBeepWorkerShutdown;
+
+        private Thread? _floatAlarmBeepThread;
+
+        private readonly object _floatAlarmBeepThreadLock = new();
+
+        private bool _tabMaskPreviewHold;
+
+        private bool _suppressPersistUserSettings;
 
         private enum PreviewRoiHitKind
         {
@@ -109,6 +122,7 @@ namespace FishingFloatAlertSharp
         {
             InitializeComponent();
             CameraDeviceComboBox.ItemsSource = _cameraComboEntries;
+            LoadUserSettingsFromFile();
             ApplyTargetColorToPicker();
             SyncColorToleranceFromSlider();
         }
@@ -161,13 +175,123 @@ namespace FishingFloatAlertSharp
         private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
         {
             StartClockTimer();
+            EnsureFloatAlarmSustainBeepWorker();
             await RefreshCameraListAsync();
         }
 
         private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
         {
             StopClockTimer();
+            StopFloatAlarmSustainBeepWorker();
+            PersistUserSettingsToFile();
             StopPreviewSync();
+        }
+
+        private void MainWindow_OnDeactivated(object? sender, EventArgs e)
+        {
+            if (!_tabMaskPreviewHold)
+                return;
+            _tabMaskPreviewHold = false;
+            UpdatePreviewImageSourceForCurrentMode();
+        }
+
+        private void MainWindow_OnPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Tab || e.IsRepeat)
+                return;
+            _tabMaskPreviewHold = true;
+            UpdatePreviewImageSourceForCurrentMode();
+            e.Handled = true;
+        }
+
+        private void MainWindow_OnPreviewKeyUp(object sender, KeyEventArgs e)
+        {
+            var isTab = e.Key == Key.Tab || (e.Key == Key.System && e.SystemKey == Key.Tab);
+            if (!isTab)
+                return;
+            if (!_tabMaskPreviewHold)
+                return;
+            _tabMaskPreviewHold = false;
+            UpdatePreviewImageSourceForCurrentMode();
+            e.Handled = true;
+        }
+
+        private static string GetUserSettingsConfigPath()
+            => Path.Combine(AppContext.BaseDirectory, "settings", "config.txt");
+
+        private void LoadUserSettingsFromFile()
+        {
+            _suppressPersistUserSettings = true;
+            try
+            {
+                var path = GetUserSettingsConfigPath();
+                if (!File.Exists(path))
+                    return;
+
+                foreach (var rawLine in File.ReadAllLines(path))
+                {
+                    var line = rawLine.Trim();
+                    if (line.Length == 0 || line.StartsWith('#'))
+                        continue;
+                    var eq = line.IndexOf('=');
+                    if (eq <= 0)
+                        continue;
+                    var key = line[..eq].Trim();
+                    var val = line[(eq + 1)..].Trim();
+                    if (key.Equals("TARGET_COLOR", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            var conv = System.Windows.Media.ColorConverter.ConvertFromString(val);
+                            if (conv is Color c)
+                                _targetColor = c;
+                        }
+                        catch
+                        {
+                            // ignore bad color
+                        }
+                    }
+                    else if (key.Equals("COLOR_TOLERANCE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tol))
+                        {
+                            tol = Math.Clamp(tol, 0, 50);
+                            _colorChannelTolerance = tol;
+                            if (ColorToleranceSlider is not null)
+                                ColorToleranceSlider.Value = tol;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning("설정 파일 읽기 실패(settings/config.txt)", ex);
+            }
+            finally
+            {
+                _suppressPersistUserSettings = false;
+            }
+        }
+
+        private void PersistUserSettingsToFile()
+        {
+            if (_suppressPersistUserSettings)
+                return;
+            try
+            {
+                var dir = Path.Combine(AppContext.BaseDirectory, "settings");
+                Directory.CreateDirectory(dir);
+                var path = GetUserSettingsConfigPath();
+                var c = _targetColor;
+                var hex = $"#{c.A:X2}{c.R:X2}{c.G:X2}{c.B:X2}";
+                var text =
+                    $"TARGET_COLOR={hex}{Environment.NewLine}COLOR_TOLERANCE={_colorChannelTolerance.ToString(CultureInfo.InvariantCulture)}{Environment.NewLine}";
+                File.WriteAllText(path, text);
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning("설정 파일 저장 실패(settings/config.txt)", ex);
+            }
         }
 
         private void StartClockTimer()
@@ -439,6 +563,7 @@ namespace FishingFloatAlertSharp
             }
 
             _previewBitmap = null;
+            _maskPreviewBitmap = null;
             _previewWidth = 0;
             _previewHeight = 0;
             await ClearPreviewSurfaceAsync();
@@ -485,6 +610,7 @@ namespace FishingFloatAlertSharp
             _mediaCapture = null;
             Thread.Sleep(80);
             _previewBitmap = null;
+            _maskPreviewBitmap = null;
             _previewWidth = 0;
             _previewHeight = 0;
             try
@@ -568,6 +694,7 @@ namespace FishingFloatAlertSharp
             {
                 PreviewImage.Source = null;
                 _previewBitmap = null;
+                _maskPreviewBitmap = null;
                 _previewWidth = 0;
                 _previewHeight = 0;
 
@@ -623,9 +750,9 @@ namespace FishingFloatAlertSharp
             if (_previewBitmap == null || w != _previewWidth || h != _previewHeight)
             {
                 _previewBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
+                _maskPreviewBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
                 _previewWidth = w;
                 _previewHeight = h;
-                PreviewImage.Source = _previewBitmap;
                 RefreshPreviewRoiLayout();
             }
 
@@ -649,6 +776,7 @@ namespace FishingFloatAlertSharp
             }
 
             ProcessFloatDetection(pixels, w, h);
+            ApplyPreviewDisplayModeAfterFrame(pixels, w, h);
         }
 
         private async Task StartPreviewAsync(string deviceId)
@@ -675,6 +803,7 @@ namespace FishingFloatAlertSharp
             {
                 PreviewImage.Source = null;
                 _previewBitmap = null;
+                _maskPreviewBitmap = null;
                 _previewWidth = 0;
                 _previewHeight = 0;
             });
@@ -942,9 +1071,9 @@ namespace FishingFloatAlertSharp
                     if (_previewBitmap == null || w != _previewWidth || h != _previewHeight)
                     {
                         _previewBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
+                        _maskPreviewBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
                         _previewWidth = w;
                         _previewHeight = h;
-                        PreviewImage.Source = _previewBitmap;
                         RefreshPreviewRoiLayout();
                     }
 
@@ -977,6 +1106,7 @@ namespace FishingFloatAlertSharp
                     }
 
                     ProcessFloatDetection(frameBytes, w, h);
+                    ApplyPreviewDisplayModeAfterFrame(frameBytes, w, h);
                 }
                 catch (Exception ex)
                 {
@@ -1016,6 +1146,7 @@ namespace FishingFloatAlertSharp
                             _suppressTargetColorPickerEvents = false;
                         }
 
+                        PersistUserSettingsToFile();
                         EyedropperToggleButton.IsChecked = false;
                     });
                 }
@@ -1384,7 +1515,10 @@ namespace FishingFloatAlertSharp
             if (_suppressTargetColorPickerEvents)
                 return;
             if (e.NewValue.HasValue)
+            {
                 _targetColor = e.NewValue.Value;
+                PersistUserSettingsToFile();
+            }
         }
 
         private void EyedropperToggleButton_OnChecked(object sender, RoutedEventArgs e) => _eyedropperActive = true;
@@ -1405,41 +1539,179 @@ namespace FishingFloatAlertSharp
             _colorChannelTolerance = v;
             if (ColorToleranceValueText is not null)
                 ColorToleranceValueText.Text = v.ToString(CultureInfo.InvariantCulture);
+            PersistUserSettingsToFile();
         }
 
-        private void ResetFloatAlarmTracking()
+        private void ResetFloatAlarmTracking() => UpdateFloatAlarmSustainRequested(false);
+
+        private void EnsureFloatAlarmSustainBeepWorker()
         {
-            _lastRoiSimilarMatchCount = -1;
-            _floatAlarmLastBeepTickMs = 0;
+            lock (_floatAlarmBeepThreadLock)
+            {
+                if (_floatAlarmBeepThread is { IsAlive: true })
+                    return;
+                _floatAlarmBeepWorkerShutdown = false;
+                _floatAlarmBeepThread = new Thread(FloatAlarmSustainBeepThreadProc)
+                {
+                    IsBackground = true,
+                    Name = "FloatAlarmSustainBeep",
+                };
+                _floatAlarmBeepThread.Start();
+            }
         }
 
-        private void TryPlayShortFloatAlarmBeep()
+        private void StopFloatAlarmSustainBeepWorker()
         {
-            var now = Environment.TickCount64;
-            if (now - _floatAlarmLastBeepTickMs < FloatAlarmBeepCooldownMs)
-                return;
-            _floatAlarmLastBeepTickMs = now;
+            _floatAlarmSustainRequested = false;
+            _floatAlarmBeepWorkerShutdown = true;
+            Thread? t;
+            lock (_floatAlarmBeepThreadLock)
+            {
+                t = _floatAlarmBeepThread;
+            }
+
             try
             {
-                Beep(1320, 45);
+                t?.Join(millisecondsTimeout: 1200);
             }
             catch
             {
                 // ignore
             }
+
+            lock (_floatAlarmBeepThreadLock)
+            {
+                if (ReferenceEquals(_floatAlarmBeepThread, t))
+                    _floatAlarmBeepThread = null;
+            }
         }
 
-        /// <summary>ROI 내 유사색 픽셀 수가 직전 프레임 대비 50% 이상 줄면 짧게 비프합니다. BGRA, <paramref name="w"/>×<paramref name="h"/>.</summary>
+        private void FloatAlarmSustainBeepThreadProc()
+        {
+            const int toneMs = 380;
+            while (!_floatAlarmBeepWorkerShutdown)
+            {
+                if (_floatAlarmSustainRequested)
+                {
+                    try
+                    {
+                        Beep(1320, toneMs);
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
+                else
+                {
+                    Thread.Sleep(20);
+                }
+            }
+        }
+
+        private void UpdateFloatAlarmSustainRequested(bool sustain)
+        {
+            _floatAlarmSustainRequested = sustain;
+            EnsureFloatAlarmSustainBeepWorker();
+        }
+
+        private void UpdateFloatAlarmSustainFromMatchCount(long matchCount) =>
+            UpdateFloatAlarmSustainRequested(matchCount <= FloatAlarmSustainMatchMax);
+
+        private bool IsMaskPreviewMode() =>
+            _tabMaskPreviewHold || (PreviewViewMaskRadio?.IsChecked == true);
+
+        private void PreviewViewModeRadio_OnChecked(object sender, RoutedEventArgs e)
+        {
+            if (!IsLoaded)
+                return;
+            UpdatePreviewImageSourceForCurrentMode();
+        }
+
+        private void UpdatePreviewImageSourceForCurrentMode()
+        {
+            if (PreviewImage is null)
+                return;
+            if (IsMaskPreviewMode() && _maskPreviewBitmap is not null)
+                PreviewImage.Source = _maskPreviewBitmap;
+            else if (_previewBitmap is not null)
+                PreviewImage.Source = _previewBitmap;
+        }
+
+        /// <summary>BGRA 버퍼를 <see cref="ProcessFloatDetection"/>과 동일한 기준으로 이진(흰/검) 마스크로 그립니다.</summary>
+        private void BlitColorMaskFromBgra(WriteableBitmap mask, byte[] bgra, int w, int h)
+        {
+            if (bgra.Length < w * h * 4 || mask.PixelWidth != w || mask.PixelHeight != h)
+                return;
+
+            var tr = _targetColor.R;
+            var tg = _targetColor.G;
+            var tb = _targetColor.B;
+            var tol = _colorChannelTolerance;
+            var srcStride = w * 4;
+
+            mask.Lock();
+            try
+            {
+                var dstStride = mask.BackBufferStride;
+                var p0 = mask.BackBuffer;
+                for (var y = 0; y < h; y++)
+                {
+                    var rowBase = y * srcStride;
+                    var dstRow = p0 + y * dstStride;
+                    for (var x = 0; x < w; x++)
+                    {
+                        var si = rowBase + x * 4;
+                        var bb = bgra[si];
+                        var gg = bgra[si + 1];
+                        var rr = bgra[si + 2];
+                        var write = (Math.Abs(rr - tr) <= tol && Math.Abs(gg - tg) <= tol && Math.Abs(bb - tb) <= tol)
+                            ? unchecked((int)0xffffffff)
+                            : unchecked((int)0xff000000);
+                        Marshal.WriteInt32(dstRow + x * 4, write);
+                    }
+                }
+
+                mask.AddDirtyRect(new Int32Rect(0, 0, w, h));
+            }
+            finally
+            {
+                mask.Unlock();
+            }
+        }
+
+        private void ApplyPreviewDisplayModeAfterFrame(byte[] bgra, int w, int h)
+        {
+            if (_previewBitmap is null || w != _previewWidth || h != _previewHeight)
+                return;
+            if (IsMaskPreviewMode() && _maskPreviewBitmap is not null)
+                BlitColorMaskFromBgra(_maskPreviewBitmap, bgra, w, h);
+            UpdatePreviewImageSourceForCurrentMode();
+        }
+
+        /// <summary>
+        /// ROI 내 유사색 픽셀이 <see cref="FloatAlarmSustainMatchMax"/>개 이하이면 지속 비프, 그보다 많으면 비프를 끕니다. BGRA, <paramref name="w"/>×<paramref name="h"/>.
+        /// </summary>
         private void ProcessFloatDetection(byte[] bgra, int w, int h)
         {
             if (bgra.Length < w * h * 4)
+            {
+                UpdateFloatAlarmSustainRequested(false);
                 return;
+            }
+
             if (!_previewRoiHasPlacement || _previewRoiSourcePixels.Width < 1 || _previewRoiSourcePixels.Height < 1)
+            {
+                UpdateFloatAlarmSustainRequested(false);
                 return;
+            }
 
             var roi = _previewRoiSourcePixels;
             if (roi.X < 0 || roi.Y < 0 || roi.X + roi.Width > w || roi.Y + roi.Height > h)
+            {
+                UpdateFloatAlarmSustainRequested(false);
                 return;
+            }
 
             var tr = _targetColor.R;
             var tg = _targetColor.G;
@@ -1461,11 +1733,7 @@ namespace FishingFloatAlertSharp
                 }
             }
 
-            if (_lastRoiSimilarMatchCount > 0
-                && (double)matchCount <= _lastRoiSimilarMatchCount * 0.5)
-                TryPlayShortFloatAlarmBeep();
-
-            _lastRoiSimilarMatchCount = matchCount;
+            UpdateFloatAlarmSustainFromMatchCount(matchCount);
         }
 
         private void ApplyTargetColorToPicker()
