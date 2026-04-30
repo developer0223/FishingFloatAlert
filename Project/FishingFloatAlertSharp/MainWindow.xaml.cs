@@ -75,14 +75,21 @@ namespace FishingFloatAlertSharp
         private const double PreviewRoiCornerHitDip = 14;
         private const double PreviewRoiEdgeHitDip = 10;
 
-        /// <summary>0.1초 구간에서 타겟 색이 ROI 안에서 이 거리(픽셀) 이상 움직이면 알람 조건으로 사용합니다.</summary>
-        private int _motionAlarmMinPixelDistance = 20;
-
         private Color _targetColor = Color.FromRgb(0, 255, 0);
 
         private bool _eyedropperActive;
 
         private bool _suppressTargetColorPickerEvents;
+
+        /// <summary>타겟 RGB 각 채널에서 허용할 최대 차이(0=일치만).</summary>
+        private int _colorChannelTolerance = 12;
+
+        /// <summary>직전 프레임 ROI 내 유사색 픽셀 수. <c>-1</c>이면 아직 비교하지 않음.</summary>
+        private long _lastRoiSimilarMatchCount = -1;
+
+        private long _floatAlarmLastBeepTickMs;
+
+        private const long FloatAlarmBeepCooldownMs = 350;
 
         private enum PreviewRoiHitKind
         {
@@ -103,7 +110,7 @@ namespace FishingFloatAlertSharp
             InitializeComponent();
             CameraDeviceComboBox.ItemsSource = _cameraComboEntries;
             ApplyTargetColorToPicker();
-            SyncMotionThresholdFromUpDown();
+            SyncColorToleranceFromSlider();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -640,6 +647,8 @@ namespace FishingFloatAlertSharp
             {
                 _previewBitmap.Unlock();
             }
+
+            ProcessFloatDetection(pixels, w, h);
         }
 
         private async Task StartPreviewAsync(string deviceId)
@@ -966,6 +975,8 @@ namespace FishingFloatAlertSharp
                     {
                         _previewBitmap.Unlock();
                     }
+
+                    ProcessFloatDetection(frameBytes, w, h);
                 }
                 catch (Exception ex)
                 {
@@ -1104,6 +1115,7 @@ namespace FishingFloatAlertSharp
             _previewRoiActiveHit = PreviewRoiHitKind.None;
             _previewRoiRectDips = Rect.Empty;
             RoiOverlayCanvas?.ReleaseMouseCapture();
+            ResetFloatAlarmTracking();
             UpdatePreviewRoiVisual();
         }
 
@@ -1310,6 +1322,7 @@ namespace FishingFloatAlertSharp
             {
                 PreviewRoiRectangle.Visibility = Visibility.Collapsed;
                 ClearPreviewRoiSourceMapping();
+                ResetFloatAlarmTracking();
                 return;
             }
 
@@ -1378,15 +1391,81 @@ namespace FishingFloatAlertSharp
 
         private void EyedropperToggleButton_OnUnchecked(object sender, RoutedEventArgs e) => _eyedropperActive = false;
 
-        private void MotionPixelThresholdUpDown_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<object?> e)
+        private void ColorToleranceSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            SyncMotionThresholdFromUpDown();
+            SyncColorToleranceFromSlider();
         }
 
-        private void SyncMotionThresholdFromUpDown()
+        private void SyncColorToleranceFromSlider()
         {
-            if (MotionPixelThresholdUpDown?.Value is int v)
-                _motionAlarmMinPixelDistance = Math.Clamp(v, 1, 5000);
+            if (ColorToleranceSlider is null)
+                return;
+            var v = (int)Math.Round(ColorToleranceSlider.Value);
+            v = Math.Clamp(v, 0, 50);
+            _colorChannelTolerance = v;
+            if (ColorToleranceValueText is not null)
+                ColorToleranceValueText.Text = v.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private void ResetFloatAlarmTracking()
+        {
+            _lastRoiSimilarMatchCount = -1;
+            _floatAlarmLastBeepTickMs = 0;
+        }
+
+        private void TryPlayShortFloatAlarmBeep()
+        {
+            var now = Environment.TickCount64;
+            if (now - _floatAlarmLastBeepTickMs < FloatAlarmBeepCooldownMs)
+                return;
+            _floatAlarmLastBeepTickMs = now;
+            try
+            {
+                Beep(1320, 45);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        /// <summary>ROI 내 유사색 픽셀 수가 직전 프레임 대비 50% 이상 줄면 짧게 비프합니다. BGRA, <paramref name="w"/>×<paramref name="h"/>.</summary>
+        private void ProcessFloatDetection(byte[] bgra, int w, int h)
+        {
+            if (bgra.Length < w * h * 4)
+                return;
+            if (!_previewRoiHasPlacement || _previewRoiSourcePixels.Width < 1 || _previewRoiSourcePixels.Height < 1)
+                return;
+
+            var roi = _previewRoiSourcePixels;
+            if (roi.X < 0 || roi.Y < 0 || roi.X + roi.Width > w || roi.Y + roi.Height > h)
+                return;
+
+            var tr = _targetColor.R;
+            var tg = _targetColor.G;
+            var tb = _targetColor.B;
+            var tol = _colorChannelTolerance;
+            var stride = w * 4;
+
+            long matchCount = 0;
+            for (var py = roi.Y; py < roi.Y + roi.Height; py++)
+            {
+                for (var px = roi.X; px < roi.X + roi.Width; px++)
+                {
+                    var i = py * stride + px * 4;
+                    var bb = bgra[i];
+                    var gg = bgra[i + 1];
+                    var rr = bgra[i + 2];
+                    if (Math.Abs(rr - tr) <= tol && Math.Abs(gg - tg) <= tol && Math.Abs(bb - tb) <= tol)
+                        matchCount++;
+                }
+            }
+
+            if (_lastRoiSimilarMatchCount > 0
+                && (double)matchCount <= _lastRoiSimilarMatchCount * 0.5)
+                TryPlayShortFloatAlarmBeep();
+
+            _lastRoiSimilarMatchCount = matchCount;
         }
 
         private void ApplyTargetColorToPicker()
@@ -1463,6 +1542,9 @@ namespace FishingFloatAlertSharp
             public int Right;
             public int Bottom;
         }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool Beep(int frequency, int duration);
 
         [DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
         private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);

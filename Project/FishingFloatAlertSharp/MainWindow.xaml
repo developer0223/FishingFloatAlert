@@ -100,46 +100,65 @@
                 Background="{StaticResource AppSurfaceBrush}"
                 BorderBrush="#FF404040"
                 BorderThickness="1">
-            <StackPanel Orientation="Vertical">
-                <TextBlock Text="타겟 컬러"
-                           FontWeight="SemiBold"
-                           Margin="0,0,0,8"/>
-                <StackPanel Orientation="Horizontal">
-                    <xctk:ColorPicker x:Name="TargetColorPickerControl"
-                                      Width="260"
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0"
+                            Margin="0,0,12,0">
+                    <TextBlock Text="타겟 컬러"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal">
+                        <xctk:ColorPicker x:Name="TargetColorPickerControl"
+                                          Width="240"
+                                          Height="28"
+                                          ShowRecentColors="False"
+                                          ShowStandardColors="True"
+                                          SelectedColorChanged="TargetColorPickerControl_OnSelectedColorChanged"/>
+                        <ToggleButton x:Name="EyedropperToggleButton"
+                                      Margin="8,0,0,0"
+                                      Width="32"
                                       Height="28"
-                                      ShowRecentColors="False"
-                                      ShowStandardColors="True"
-                                      SelectedColorChanged="TargetColorPickerControl_OnSelectedColorChanged"/>
-                    <ToggleButton x:Name="EyedropperToggleButton"
-                                  Margin="10,0,0,0"
-                                  Width="32"
-                                  Height="28"
-                                  Padding="0"
-                                  FontFamily="Segoe MDL2 Assets"
-                                  Content="&#xEF3C;"
-                                  Foreground="{StaticResource AppForegroundBrush}"
-                                  ToolTip="스포이드: 켠 뒤 미리보기 영상을 클릭하면 해당 픽셀 색으로 설정됩니다."
-                                  Checked="EyedropperToggleButton_OnChecked"
-                                  Unchecked="EyedropperToggleButton_OnUnchecked"/>
+                                      Padding="0"
+                                      FontFamily="Segoe MDL2 Assets"
+                                      Content="&#xEF3C;"
+                                      Foreground="{StaticResource AppForegroundBrush}"
+                                      ToolTip="스포이드: 켠 뒤 미리보기 영상을 클릭하면 해당 픽셀 색으로 설정됩니다."
+                                      Checked="EyedropperToggleButton_OnChecked"
+                                      Unchecked="EyedropperToggleButton_OnUnchecked"/>
+                    </StackPanel>
                 </StackPanel>
-                <TextBlock Text="이동 범위"
-                           FontWeight="SemiBold"
-                           Margin="0,16,0,8"/>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="0.1초 동안 감지할 최소 이동 거리 (픽셀, ROI·원본 기준):"
-                               VerticalAlignment="Center"
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="색상 허용치"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,8"/>
+                    <TextBlock Text="RGB 각 채널에서 타겟과 허용할 최대 차이 (비슷한 색 포함)"
                                TextWrapping="Wrap"
-                               MaxWidth="520"
-                               Margin="0,0,12,0"/>
-                    <xctk:IntegerUpDown x:Name="MotionPixelThresholdUpDown"
-                                        Width="100"
-                                        Minimum="1"
-                                        Maximum="5000"
-                                        Value="20"
-                                        ValueChanged="MotionPixelThresholdUpDown_OnValueChanged"/>
+                               Foreground="#FFB0B0B0"
+                               FontSize="11"
+                               Margin="0,0,0,6"/>
+                    <StackPanel Orientation="Horizontal"
+                                VerticalAlignment="Center">
+                        <Slider x:Name="ColorToleranceSlider"
+                                Width="160"
+                                Minimum="0"
+                                Maximum="50"
+                                Value="12"
+                                TickFrequency="1"
+                                IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ValueChanged="ColorToleranceSlider_OnValueChanged"/>
+                        <TextBlock x:Name="ColorToleranceValueText"
+                                   Text="12"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0"
+                                   MinWidth="28"
+                                   FontFamily="Consolas"/>
+                    </StackPanel>
                 </StackPanel>
-            </StackPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>
