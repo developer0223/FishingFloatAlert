@@ -8,6 +8,7 @@ namespace FishingFloatAlertSharp
     {
         protected override void OnStartup(StartupEventArgs e)
         {
+#if DEBUG
             if (AllocConsole())
             {
                 try
@@ -19,12 +20,15 @@ namespace FishingFloatAlertSharp
                     // ignore
                 }
             }
+#endif
 
             base.OnStartup(e);
         }
 
+#if DEBUG
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool AllocConsole();
+#endif
     }
 }

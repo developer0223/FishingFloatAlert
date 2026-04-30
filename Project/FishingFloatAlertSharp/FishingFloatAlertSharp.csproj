@@ -1,7 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
+    <!-- NuGet 패키지가 포함하는 위성 리소스(fr, hu, it 등) 중 필요한 문화만 출력 -->
+    <SatelliteResourceLanguages>ko;en</SatelliteResourceLanguages>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
