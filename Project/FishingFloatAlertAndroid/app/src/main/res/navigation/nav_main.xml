@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_main"
+    app:startDestination="@id/nav_camera">
+
+    <fragment
+        android:id="@+id/nav_camera"
+        android:name="com.fakeeyes.fishingfloatalert.CameraFragment"
+        android:label="@string/nav_camera"
+        tools:layout="@layout/fragment_camera" />
+
+    <fragment
+        android:id="@+id/nav_color_settings"
+        android:name="com.fakeeyes.fishingfloatalert.ColorSettingsFragment"
+        android:label="@string/nav_color_settings"
+        tools:layout="@layout/fragment_color_settings" />
+
+    <fragment
+        android:id="@+id/nav_other_settings"
+        android:name="com.fakeeyes.fishingfloatalert.OtherSettingsFragment"
+        android:label="@string/nav_other_settings"
+        tools:layout="@layout/fragment_other_settings" />
+
+</navigation>
