@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">FishingFloatAlert</string>
+    <string name="app_name">찌알리미</string>
     <string name="nav_camera">카메라</string>
     <string name="nav_color_settings">색상 설정</string>
     <string name="nav_other_settings">기타 설정</string>
