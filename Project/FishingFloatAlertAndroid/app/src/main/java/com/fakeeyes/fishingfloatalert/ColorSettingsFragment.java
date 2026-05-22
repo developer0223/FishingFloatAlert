@@ -72,7 +72,7 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
 
     @Override
     public void onDestroyView() {
-        releaseFrozenBitmap();
+        exitCaptureMode();
         super.onDestroyView();
     }
 
@@ -90,30 +90,39 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
     }
 
     private void enterCaptureMode() {
+        if (captureMode) {
+            return;
+        }
         ImageView imageView = getFullscreenImageView();
-        if (imageView == null || imageView.getDrawable() == null) {
+        if (imageView == null) {
             return;
         }
-        Bitmap current = null;
-        if (imageView.getDrawable() instanceof BitmapDrawable) {
-            BitmapDrawable bitmapDrawable = (BitmapDrawable) imageView.getDrawable();
-            current = bitmapDrawable.getBitmap();
-        }
-        if (current == null) {
+        Bitmap source = getDisplayBitmap(imageView);
+        if (source == null || source.isRecycled()) {
             return;
         }
-        releaseFrozenBitmap();
-        frozenBitmap = CameraImageUtils.copyBitmap(current);
-        setFullscreenImage(frozenBitmap);
+        frozenBitmap = CameraImageUtils.copyBitmap(source);
+        if (frozenBitmap == null) {
+            return;
+        }
         captureMode = true;
+        setFullscreenImage(frozenBitmap);
         if (crosshairOverlay != null) {
             crosshairOverlay.hideCrosshair();
         }
     }
 
     private void applyPickedColor() {
+        if (!captureMode) {
+            return;
+        }
         AppSettings.getInstance().setTargetColor(pickedColor);
+        exitCaptureMode();
+    }
+
+    private void exitCaptureMode() {
         captureMode = false;
+        detachFrozenBitmapFromImageView();
         releaseFrozenBitmap();
         if (crosshairOverlay != null) {
             crosshairOverlay.hideCrosshair();
@@ -121,28 +130,64 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
     }
 
     private boolean onPreviewTouched(@NonNull View view, @NonNull MotionEvent event) {
-        if (!captureMode || event.getAction() != MotionEvent.ACTION_DOWN) {
+        if (!captureMode || frozenBitmap == null || frozenBitmap.isRecycled()) {
             return false;
         }
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            updateColorPickAt(view, event);
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            return true;
+        }
+        return false;
+    }
+
+    private void updateColorPickAt(@NonNull View touchSource, @NonNull MotionEvent event) {
         ImageView imageView = getFullscreenImageView();
-        if (imageView == null || frozenBitmap == null) {
-            return false;
+        if (imageView == null) {
+            return;
         }
-        float[] mapped = mapTouchToImageView(imageView, view, event.getX(), event.getY());
+        float[] mapped = mapTouchToImageView(imageView, touchSource, event.getX(), event.getY());
         Integer color = ImageViewTouchMapper.getColorAtTouch(
                 imageView,
                 frozenBitmap,
                 mapped[0],
                 mapped[1]);
         if (color == null) {
-            return true;
+            return;
         }
         pickedColor = color;
         updateColorSwatch(pickedColor);
         if (crosshairOverlay != null) {
             crosshairOverlay.setCrosshairPosition(mapped[0], mapped[1]);
         }
-        return true;
+    }
+
+    @Nullable
+    private Bitmap getDisplayBitmap(@NonNull ImageView imageView) {
+        if (imageView.getDrawable() instanceof BitmapDrawable) {
+            BitmapDrawable bitmapDrawable = (BitmapDrawable) imageView.getDrawable();
+            Bitmap bitmap = bitmapDrawable.getBitmap();
+            if (bitmap != null && !bitmap.isRecycled()) {
+                return bitmap;
+            }
+        }
+        return null;
+    }
+
+    private void detachFrozenBitmapFromImageView() {
+        ImageView imageView = getFullscreenImageView();
+        if (imageView == null || frozenBitmap == null) {
+            return;
+        }
+        if (imageView.getDrawable() instanceof BitmapDrawable) {
+            Bitmap displayed = ((BitmapDrawable) imageView.getDrawable()).getBitmap();
+            if (displayed == frozenBitmap) {
+                imageView.setImageDrawable(null);
+            }
+        }
     }
 
     @NonNull
@@ -168,7 +213,9 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
 
     private void releaseFrozenBitmap() {
         if (frozenBitmap != null) {
-            frozenBitmap.recycle();
+            if (!frozenBitmap.isRecycled()) {
+                frozenBitmap.recycle();
+            }
             frozenBitmap = null;
         }
     }

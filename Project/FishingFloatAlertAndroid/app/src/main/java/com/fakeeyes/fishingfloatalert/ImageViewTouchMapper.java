@@ -19,7 +19,7 @@ final class ImageViewTouchMapper {
             float touchX,
             float touchY,
             @NonNull int[] outPixel) {
-        if (bitmap.getWidth() < 1 || bitmap.getHeight() < 1) {
+        if (bitmap.isRecycled() || bitmap.getWidth() < 1 || bitmap.getHeight() < 1) {
             return false;
         }
         Matrix matrix = new Matrix(imageView.getImageMatrix());
