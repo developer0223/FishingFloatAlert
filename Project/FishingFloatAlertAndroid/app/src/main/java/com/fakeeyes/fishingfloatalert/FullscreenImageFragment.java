@@ -9,8 +9,9 @@ import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
 
-abstract class FullscreenImageFragment extends Fragment {
+abstract class FullscreenImageFragment extends Fragment implements CameraFrameListener {
 
     @Nullable
     private ImageView fullscreenImage;
@@ -23,6 +24,26 @@ abstract class FullscreenImageFragment extends Fragment {
         if (fullscreenImage != null && defaultImageResId != 0) {
             fullscreenImage.setImageResource(defaultImageResId);
         }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        FragmentActivity activity = getActivity();
+        if (activity != null) {
+            CameraPreviewManager.getInstance().addListener(this, activity);
+        }
+    }
+
+    @Override
+    public void onPause() {
+        CameraPreviewManager.getInstance().removeListener(this);
+        super.onPause();
+    }
+
+    @Override
+    public void onCameraFrame(@NonNull Bitmap frame) {
+        setFullscreenImage(frame);
     }
 
     @DrawableRes
