@@ -16,4 +16,16 @@
     <string name="zoom_3x_description">3배율</string>
     <string name="zoom_5x_description">5배율</string>
     <string name="zoom_10x_description">10배율</string>
+    <string name="preview_mode_camera">카메라</string>
+    <string name="preview_mode_filter">필터</string>
+    <string name="pixel_count_format">%1$d px</string>
+    <string name="btn_capture">캡쳐</string>
+    <string name="btn_apply">적용</string>
+    <string name="settings_title">기타 설정</string>
+    <string name="settings_alarm_enabled">실시간 알람</string>
+    <string name="settings_color_tolerance">색상 허용치</string>
+    <string name="settings_color_tolerance_value">현재 값: %1$d</string>
+    <string name="settings_alarm_match_max">알람 픽셀 임계값</string>
+    <string name="settings_alarm_match_max_value">현재 값: %1$d</string>
+    <string name="settings_alarm_match_max_hint">감지 픽셀 수가 이 값 이하일 때 알람이 울립니다. (PC 앱 기본값: 5)</string>
 </resources>

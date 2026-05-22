@@ -1,6 +1,5 @@
 package com.fakeeyes.fishingfloatalert;
 
-import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.ImageView;
@@ -41,11 +40,6 @@ abstract class FullscreenImageFragment extends Fragment implements CameraFrameLi
         super.onPause();
     }
 
-    @Override
-    public void onCameraFrame(@NonNull Bitmap frame) {
-        setFullscreenImage(frame);
-    }
-
     @DrawableRes
     protected abstract int getDefaultImageResId();
 
@@ -55,7 +49,7 @@ abstract class FullscreenImageFragment extends Fragment implements CameraFrameLi
         }
     }
 
-    public void setFullscreenImage(@Nullable Bitmap bitmap) {
+    public void setFullscreenImage(@Nullable android.graphics.Bitmap bitmap) {
         if (fullscreenImage != null) {
             fullscreenImage.setImageBitmap(bitmap);
         }

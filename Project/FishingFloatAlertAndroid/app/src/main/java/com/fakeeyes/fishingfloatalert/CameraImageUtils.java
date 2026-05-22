@@ -20,19 +20,24 @@ final class CameraImageUtils {
     }
 
     @Nullable
-    static Bitmap imageToDisplayBitmap(@NonNull Image image, int rotationDegrees) {
+    static Bitmap imageToSquareDisplayBitmap(@NonNull Image image, int rotationDegrees) {
         Bitmap bitmap = yuv420888ToBitmap(image);
         if (bitmap == null) {
             return null;
         }
-        if (rotationDegrees == 0) {
-            return bitmap;
+        if (rotationDegrees != 0) {
+            Bitmap rotated = rotateBitmap(bitmap, rotationDegrees);
+            if (rotated != bitmap) {
+                bitmap.recycle();
+            }
+            bitmap = rotated;
         }
-        Bitmap rotated = rotateBitmap(bitmap, rotationDegrees);
-        if (rotated != bitmap) {
-            bitmap.recycle();
-        }
-        return rotated;
+        return cropCenterSquare(bitmap);
+    }
+
+    @NonNull
+    static Bitmap copyBitmap(@NonNull Bitmap source) {
+        return source.copy(Bitmap.Config.ARGB_8888, false);
     }
 
     @Nullable

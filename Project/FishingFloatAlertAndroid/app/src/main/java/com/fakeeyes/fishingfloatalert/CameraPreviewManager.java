@@ -64,6 +64,7 @@ public final class CameraPreviewManager {
     private int previewRotationDegrees;
     private long lastFrameDeliveredMs;
     private float zoomRatio = 1f;
+    private volatile boolean filterModeEnabled;
 
     private final Runnable delayedCloseRunnable = this::closeCamera;
 
@@ -112,6 +113,14 @@ public final class CameraPreviewManager {
         if (cameraHandler != null) {
             cameraHandler.post(this::updateRepeatingRequest);
         }
+    }
+
+    public boolean isFilterModeEnabled() {
+        return filterModeEnabled;
+    }
+
+    public void setFilterModeEnabled(boolean enabled) {
+        filterModeEnabled = enabled;
     }
 
     private void maybeOpenCamera() {
@@ -441,25 +450,50 @@ public final class CameraPreviewManager {
             return;
         }
         lastFrameDeliveredMs = now;
-        Bitmap bitmap = CameraImageUtils.imageToDisplayBitmap(image, previewRotationDegrees);
+        Bitmap rawBitmap = CameraImageUtils.imageToSquareDisplayBitmap(image, previewRotationDegrees);
         image.close();
-        if (bitmap == null || listeners.isEmpty()) {
-            if (bitmap != null) {
-                bitmap.recycle();
+        if (rawBitmap == null || listeners.isEmpty()) {
+            if (rawBitmap != null) {
+                rawBitmap.recycle();
             }
             return;
         }
-        mainHandler.post(() -> dispatchFrame(bitmap));
+        processAndDispatchFrame(rawBitmap);
     }
 
-    private void dispatchFrame(@NonNull Bitmap bitmap) {
+    private void processAndDispatchFrame(@NonNull Bitmap rawBitmap) {
+        AppSettings settings = AppSettings.getInstance();
+        int targetColor = settings.getTargetColor();
+        int tolerance = settings.getColorTolerance();
+        int matchCount = ColorMaskProcessor.countMatchingPixels(rawBitmap, targetColor, tolerance);
+        FloatAlarmManager.getInstance().updateFromMatchCount(matchCount);
+
+        Bitmap displayBitmap;
+        if (filterModeEnabled) {
+            displayBitmap = ColorMaskProcessor.createMaskBitmap(rawBitmap, targetColor, tolerance);
+        } else {
+            displayBitmap = rawBitmap;
+        }
+
+        CameraFrame frame = new CameraFrame(rawBitmap, displayBitmap, matchCount);
+        mainHandler.post(() -> dispatchFrame(frame));
+    }
+
+    private void dispatchFrame(@NonNull CameraFrame frame) {
         if (listeners.isEmpty()) {
-            bitmap.recycle();
+            recycleFrame(frame);
             return;
         }
         for (CameraFrameListener listener : listeners) {
-            listener.onCameraFrame(bitmap);
+            listener.onCameraFrame(frame);
         }
+    }
+
+    private static void recycleFrame(@NonNull CameraFrame frame) {
+        if (frame.getRawBitmap() != frame.getDisplayBitmap()) {
+            frame.getDisplayBitmap().recycle();
+        }
+        frame.getRawBitmap().recycle();
     }
 
     private void closeCamera() {
