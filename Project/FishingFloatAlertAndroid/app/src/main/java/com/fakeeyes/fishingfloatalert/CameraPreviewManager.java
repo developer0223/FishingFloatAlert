@@ -4,6 +4,8 @@ import android.Manifest;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.os.Build;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -61,6 +63,7 @@ public final class CameraPreviewManager {
     private String cameraId;
     private int previewRotationDegrees;
     private long lastFrameDeliveredMs;
+    private float zoomRatio = 1f;
 
     private final Runnable delayedCloseRunnable = this::closeCamera;
 
@@ -97,6 +100,17 @@ public final class CameraPreviewManager {
         if (listeners.isEmpty()) {
             hostActivity = null;
             mainHandler.postDelayed(delayedCloseRunnable, CAMERA_CLOSE_DELAY_MS);
+        }
+    }
+
+    public float getZoomRatio() {
+        return zoomRatio;
+    }
+
+    public void setZoomRatio(float ratio) {
+        zoomRatio = Math.max(1f, ratio);
+        if (cameraHandler != null) {
+            cameraHandler.post(this::updateRepeatingRequest);
         }
     }
 
@@ -305,7 +319,31 @@ public final class CameraPreviewManager {
     private void startRepeatingRequest(
             @NonNull CameraCharacteristics characteristics,
             @Nullable Range<Integer> fpsRange) {
-        if (cameraDevice == null || captureSession == null || imageReader == null) {
+        updateRepeatingRequest(characteristics, fpsRange);
+    }
+
+    private void updateRepeatingRequest() {
+        if (appContext == null || cameraId == null) {
+            return;
+        }
+        CameraManager cameraManager = appContext.getSystemService(CameraManager.class);
+        if (cameraManager == null) {
+            return;
+        }
+        try {
+            CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+            Range<Integer> fpsRange = chooseFpsRange(
+                    characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES));
+            updateRepeatingRequest(characteristics, fpsRange);
+        } catch (CameraAccessException ignored) {
+            closeCamera();
+        }
+    }
+
+    private void updateRepeatingRequest(
+            @NonNull CameraCharacteristics characteristics,
+            @Nullable Range<Integer> fpsRange) {
+        if (cameraDevice == null || captureSession == null || imageReader == null || cameraHandler == null) {
             return;
         }
         try {
@@ -317,10 +355,48 @@ public final class CameraPreviewManager {
             if (fpsRange != null) {
                 builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
             }
+            applyZoom(builder, characteristics);
             captureSession.setRepeatingRequest(builder.build(), null, cameraHandler);
         } catch (CameraAccessException ignored) {
             closeCamera();
         }
+    }
+
+    private void applyZoom(
+            @NonNull CaptureRequest.Builder builder,
+            @NonNull CameraCharacteristics characteristics) {
+        float clampedZoom = clampZoom(zoomRatio, characteristics);
+        zoomRatio = clampedZoom;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clampedZoom);
+        } else {
+            builder.set(CaptureRequest.SCALER_CROP_REGION, buildCropRegion(characteristics, clampedZoom));
+        }
+    }
+
+    private float clampZoom(float requested, @NonNull CameraCharacteristics characteristics) {
+        float maxZoom = getMaxDigitalZoom(characteristics);
+        return Math.max(1f, Math.min(requested, maxZoom));
+    }
+
+    private float getMaxDigitalZoom(@NonNull CameraCharacteristics characteristics) {
+        Float maxZoom = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+        return maxZoom != null && maxZoom >= 1f ? maxZoom : 1f;
+    }
+
+    @NonNull
+    private static Rect buildCropRegion(
+            @NonNull CameraCharacteristics characteristics,
+            float zoom) {
+        Rect activeArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        if (activeArray == null) {
+            return new Rect();
+        }
+        int cropWidth = (int) (activeArray.width() / zoom);
+        int cropHeight = (int) (activeArray.height() / zoom);
+        int left = activeArray.left + (activeArray.width() - cropWidth) / 2;
+        int top = activeArray.top + (activeArray.height() - cropHeight) / 2;
+        return new Rect(left, top, left + cropWidth, top + cropHeight);
     }
 
     @Nullable

@@ -6,4 +6,14 @@
     <string name="placeholder_camera">카메라 화면 (준비 중)</string>
     <string name="placeholder_color_settings">색상 설정 화면 (준비 중)</string>
     <string name="placeholder_other_settings">기타 설정 화면 (준비 중)</string>
+    <string name="zoom_1x">1x</string>
+    <string name="zoom_2x">2x</string>
+    <string name="zoom_3x">3x</string>
+    <string name="zoom_5x">5x</string>
+    <string name="zoom_10x">10x</string>
+    <string name="zoom_1x_description">1배율</string>
+    <string name="zoom_2x_description">2배율</string>
+    <string name="zoom_3x_description">3배율</string>
+    <string name="zoom_5x_description">5배율</string>
+    <string name="zoom_10x_description">10배율</string>
 </resources>

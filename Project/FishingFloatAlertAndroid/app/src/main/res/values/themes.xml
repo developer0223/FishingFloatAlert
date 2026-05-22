@@ -6,4 +6,16 @@
     </style>
 
     <style name="Theme.FishingFloatAlert" parent="Base.Theme.FishingFloatAlert" />
+
+    <style name="ZoomButtonStyle">
+        <item name="android:layout_width">44dp</item>
+        <item name="android:layout_height">44dp</item>
+        <item name="android:background">@drawable/bg_zoom_button</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">@color/white</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
 </resources>
