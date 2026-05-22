@@ -33,7 +33,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
 
 public final class CameraPreviewManager {
 
-    private static final long TARGET_FRAME_INTERVAL_MS = 100L;
+    private static final long TARGET_FRAME_INTERVAL_MS = 25L;
     private static final long CAMERA_CLOSE_DELAY_MS = 250L;
 
     private static final CameraPreviewManager INSTANCE = new CameraPreviewManager();
