@@ -5,11 +5,6 @@
     android:layout_height="match_parent"
     tools:context=".CameraFragment">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:text="@string/placeholder_camera"
-        android:textAppearance="?attr/textAppearanceBodyLarge" />
+    <include layout="@layout/include_fullscreen_image" />
 
 </FrameLayout>
