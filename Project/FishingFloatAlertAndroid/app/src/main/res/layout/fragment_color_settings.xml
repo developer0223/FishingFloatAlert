@@ -12,6 +12,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <include
+        layout="@layout/include_zoom_button_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="88dp" />
+
     <LinearLayout
         android:id="@+id/color_settings_bottom_bar"
         android:layout_width="wrap_content"

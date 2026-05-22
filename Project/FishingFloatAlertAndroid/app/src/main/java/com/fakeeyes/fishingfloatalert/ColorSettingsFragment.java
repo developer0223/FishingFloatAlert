@@ -48,6 +48,8 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
         pickedColor = AppSettings.getInstance().getTargetColor();
         updateColorSwatch(pickedColor);
 
+        ZoomButtonHelper.setup(view);
+
         MaterialButton captureButton = view.findViewById(R.id.btn_capture);
         MaterialButton applyButton = view.findViewById(R.id.btn_apply);
         captureButton.setOnClickListener(v -> enterCaptureMode());
@@ -56,6 +58,15 @@ public class ColorSettingsFragment extends FullscreenImageFragment {
         View touchTarget = crosshairOverlay != null ? crosshairOverlay : fullscreenImage;
         if (touchTarget != null) {
             touchTarget.setOnTouchListener(this::onPreviewTouched);
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        View view = getView();
+        if (view != null) {
+            ZoomButtonHelper.setup(view);
         }
     }
 

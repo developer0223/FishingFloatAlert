@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/zoom_button_bar"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="bottom|center_horizontal"
+    android:clipToPadding="false"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp">
+
+    <TextView
+        android:id="@+id/zoom_btn_1"
+        style="@style/ZoomButtonStyle"
+        android:contentDescription="@string/zoom_1x_description"
+        android:text="@string/zoom_1x" />
+
+    <TextView
+        android:id="@+id/zoom_btn_2"
+        style="@style/ZoomButtonStyle"
+        android:layout_marginStart="10dp"
+        android:contentDescription="@string/zoom_2x_description"
+        android:text="@string/zoom_2x" />
+
+    <TextView
+        android:id="@+id/zoom_btn_3"
+        style="@style/ZoomButtonStyle"
+        android:layout_marginStart="10dp"
+        android:contentDescription="@string/zoom_3x_description"
+        android:text="@string/zoom_3x" />
+
+    <TextView
+        android:id="@+id/zoom_btn_5"
+        style="@style/ZoomButtonStyle"
+        android:layout_marginStart="10dp"
+        android:contentDescription="@string/zoom_5x_description"
+        android:text="@string/zoom_5x" />
+
+    <TextView
+        android:id="@+id/zoom_btn_10"
+        style="@style/ZoomButtonStyle"
+        android:layout_marginStart="10dp"
+        android:contentDescription="@string/zoom_10x_description"
+        android:text="@string/zoom_10x" />
+
+</LinearLayout>
